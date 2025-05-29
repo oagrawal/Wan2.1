@@ -480,37 +480,17 @@ class WanModel(ModelMixin, ConfigMixin):
         self.init_weights()
 
     def forward(
-        self,
-        x,
-        t,
-        context,
-        seq_len,
-        clip_fea=None,
-        y=None,
-    ):
-        r"""
-        Forward pass through the diffusion model
-
-        Args:
-            x (List[Tensor]):
-                List of input video tensors, each with shape [C_in, F, H, W]
-            t (Tensor):
-                Diffusion timesteps tensor of shape [B]
-            context (List[Tensor]):
-                List of text embeddings each with shape [L, C]
-            seq_len (`int`):
-                Maximum sequence length for positional encoding
-            clip_fea (Tensor, *optional*):
-                CLIP image features for image-to-video mode
-            y (List[Tensor], *optional*):
-                Conditional video inputs for image-to-video mode, same shape as x
-
-        Returns:
-            List[Tensor]:
-                List of denoised video tensors with original input shapes [C_out, F, H / 8, W / 8]
-        """
+            self,
+            x,
+            t,
+            context,
+            seq_len,
+            clip_fea=None,
+            y=None,
+        ):
         if self.model_type == 'i2v':
             assert clip_fea is not None and y is not None
+        
         # params
         device = self.patch_embedding.weight.device
         if self.freqs.device != device:
@@ -518,6 +498,9 @@ class WanModel(ModelMixin, ConfigMixin):
 
         if y is not None:
             x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
+
+        # Duplicate video inputs to match duplicated text context
+        x = x + x  # Duplicate the list to have 2x samples
 
         # embeddings
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
@@ -528,8 +511,11 @@ class WanModel(ModelMixin, ConfigMixin):
         assert seq_lens.max() <= seq_len
         x = torch.cat([
             torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))],
-                      dim=1) for u in x
+                    dim=1) for u in x
         ])
+
+        # Duplicate time embeddings to match batch size
+        t = torch.cat([t, t])  # Duplicate timesteps
 
         # time embeddings
         with amp.autocast(dtype=torch.float32):
@@ -538,16 +524,20 @@ class WanModel(ModelMixin, ConfigMixin):
             e0 = self.time_projection(e).unflatten(1, (6, self.dim))
             assert e.dtype == torch.float32 and e0.dtype == torch.float32
 
-        # context
+        # context - DUPLICATE TEXT EMBEDDINGS HERE
         context_lens = None
-        context = self.text_embedding(
-            torch.stack([
-                torch.cat(
-                    [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
-                for u in context
-            ]))
+        
+        # Duplicate each context tensor to create 2 copies of each prompt
+        duplicated_context = []
+        for u in context:
+            padded_u = torch.cat([u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
+            duplicated_context.extend([padded_u, padded_u])  # Add two identical copies
+        
+        context = self.text_embedding(torch.stack(duplicated_context))
 
+        # Duplicate CLIP features if present (for i2v mode)
         if clip_fea is not None:
+            clip_fea = torch.cat([clip_fea, clip_fea])  # Duplicate CLIP features
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
             context = torch.concat([context_clip, context], dim=1)
 
