@@ -35,6 +35,8 @@ EXAMPLE_PROMPT = {
     },
 }
 
+which_gpu = 0 
+
 
 def _validate_args(args):
     # Basic check
@@ -196,7 +198,7 @@ def _parse_args():
 
 def _init_logging(rank):
     # logging
-    if rank == 0:
+    if rank == which_gpu:
         # set format
         logging.basicConfig(
             level=logging.INFO,
@@ -207,9 +209,9 @@ def _init_logging(rank):
 
 
 def generate(args):
-    rank = int(os.getenv("RANK", 0))
+    rank = int(os.getenv("RANK", which_gpu))
     world_size = int(os.getenv("WORLD_SIZE", 1))
-    local_rank = int(os.getenv("LOCAL_RANK", 0))
+    local_rank = int(os.getenv("LOCAL_RANK", which_gpu))
     device = local_rank
     _init_logging(rank)
 
@@ -378,7 +380,7 @@ def generate(args):
             seed=args.base_seed,
             offload_model=args.offload_model)
 
-    if rank == 0:
+    if rank == which_gpu:
         if args.save_file is None:
             formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
             formatted_prompt = args.prompt.replace(" ", "_").replace("/",

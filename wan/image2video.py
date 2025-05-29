@@ -25,6 +25,7 @@ from .utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                get_sampling_sigmas, retrieve_timesteps)
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
+which_gpu = 0
 
 class WanI2V:
 
@@ -174,6 +175,16 @@ class WanI2V:
                 - H: Frame height (from max_area)
                 - W: Frame width from max_area)
         """
+        # Initialize timing dictionary
+        timings = {
+            "t5_encoder": 0.0,
+            "clip_encoder": 0.0,
+            "vae_encode": 0.0,
+            "wan_model_conditional": 0.0,
+            "wan_model_unconditional": 0.0,
+            "vae_decode": 0.0
+        }
+        
         img = TF.to_tensor(img).sub_(0.5).div_(0.5).to(self.device)
 
         F = frame_num
@@ -216,7 +227,11 @@ class WanI2V:
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
 
-        # preprocess
+        # Time T5 encoder
+        start_t5 = torch.cuda.Event(enable_timing=True)
+        end_t5 = torch.cuda.Event(enable_timing=True)
+        
+        start_t5.record()
         if not self.t5_cpu:
             self.text_encoder.model.to(self.device)
             context = self.text_encoder([input_prompt], self.device)
@@ -228,12 +243,28 @@ class WanI2V:
             context_null = self.text_encoder([n_prompt], torch.device('cpu'))
             context = [t.to(self.device) for t in context]
             context_null = [t.to(self.device) for t in context_null]
+        end_t5.record()
+        torch.cuda.synchronize()
+        timings["t5_encoder"] = start_t5.elapsed_time(end_t5)
 
+        # Time CLIP encoder
+        start_clip = torch.cuda.Event(enable_timing=True)
+        end_clip = torch.cuda.Event(enable_timing=True)
+        
+        start_clip.record()
         self.clip.model.to(self.device)
         clip_context = self.clip.visual([img[:, None, :, :]])
         if offload_model:
             self.clip.model.cpu()
+        end_clip.record()
+        torch.cuda.synchronize()
+        timings["clip_encoder"] = start_clip.elapsed_time(end_clip)
 
+        # Time VAE encoding
+        start_vae_encode = torch.cuda.Event(enable_timing=True)
+        end_vae_encode = torch.cuda.Event(enable_timing=True)
+        
+        start_vae_encode.record()
         y = self.vae.encode([
             torch.concat([
                 torch.nn.functional.interpolate(
@@ -244,6 +275,9 @@ class WanI2V:
                          dim=1).to(self.device)
         ])[0]
         y = torch.concat([msk, y])
+        end_vae_encode.record()
+        torch.cuda.synchronize()
+        timings["vae_encode"] = start_vae_encode.elapsed_time(end_vae_encode)
 
         @contextmanager
         def noop_no_sync():
@@ -253,7 +287,6 @@ class WanI2V:
 
         # evaluation mode
         with amp.autocast(dtype=self.param_dtype), torch.no_grad(), no_sync():
-
             if sample_solver == 'unipc':
                 sample_scheduler = FlowUniPCMultistepScheduler(
                     num_train_timesteps=self.num_train_timesteps,
@@ -302,16 +335,36 @@ class WanI2V:
 
                 timestep = torch.stack(timestep).to(self.device)
 
+                # Time conditional model call
+                start_cond = torch.cuda.Event(enable_timing=True)
+                end_cond = torch.cuda.Event(enable_timing=True)
+                
+                start_cond.record()
                 noise_pred_cond = self.model(
                     latent_model_input, t=timestep, **arg_c)[0].to(
                         torch.device('cpu') if offload_model else self.device)
+                end_cond.record()
+                torch.cuda.synchronize()
+                timings["wan_model_conditional"] += start_cond.elapsed_time(end_cond)
+                
                 if offload_model:
                     torch.cuda.empty_cache()
+                
+                # Time unconditional model call
+                start_uncond = torch.cuda.Event(enable_timing=True)
+                end_uncond = torch.cuda.Event(enable_timing=True)
+                
+                start_uncond.record()
                 noise_pred_uncond = self.model(
                     latent_model_input, t=timestep, **arg_null)[0].to(
                         torch.device('cpu') if offload_model else self.device)
+                end_uncond.record()
+                torch.cuda.synchronize()
+                timings["wan_model_unconditional"] += start_uncond.elapsed_time(end_uncond)
+                
                 if offload_model:
                     torch.cuda.empty_cache()
+                
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
 
@@ -333,8 +386,16 @@ class WanI2V:
                 self.model.cpu()
                 torch.cuda.empty_cache()
 
-            if self.rank == 0:
+            # Time VAE decoding
+            if self.rank == which_gpu:
+                start_vae = torch.cuda.Event(enable_timing=True)
+                end_vae = torch.cuda.Event(enable_timing=True)
+                
+                start_vae.record()
                 videos = self.vae.decode(x0)
+                end_vae.record()
+                torch.cuda.synchronize()
+                timings["vae_decode"] = start_vae.elapsed_time(end_vae)
 
         del noise, latent
         del sample_scheduler
@@ -344,4 +405,19 @@ class WanI2V:
         if dist.is_initialized():
             dist.barrier()
 
-        return videos[0] if self.rank == 0 else None
+        # Print timing summary
+        if self.rank == which_gpu:
+            print("\n===== Model Timing Summary =====")
+            print(f"T5 Text Encoder: {timings['t5_encoder']:.2f} ms")
+            print(f"CLIP Image Encoder: {timings['clip_encoder']:.2f} ms")
+            print(f"VAE Encoding: {timings['vae_encode']:.2f} ms")
+            print(f"WanModel (Conditional): {timings['wan_model_conditional']:.2f} ms")
+            print(f"WanModel (Unconditional): {timings['wan_model_unconditional']:.2f} ms")
+            total_model_time = timings['wan_model_conditional'] + timings['wan_model_unconditional']
+            print(f"WanModel Total: {total_model_time:.2f} ms")
+            print(f"Average time per diffusion step: {total_model_time/len(timesteps):.2f} ms")
+            print(f"VAE Decoding: {timings['vae_decode']:.2f} ms")
+            print(f"Total model time: {timings['t5_encoder'] + timings['clip_encoder'] + timings['vae_encode'] + total_model_time + timings['vae_decode']:.2f} ms")
+            print("==============================\n")
+
+        return videos[0] if self.rank == which_gpu else None

@@ -1,0 +1,179 @@
+    # def generate(self,
+    #         input_prompt,
+    #         size=(1280, 720),
+    #         frame_num=81,
+    #         shift=5.0,
+    #         sample_solver='unipc',
+    #         sampling_steps=50,
+    #         guide_scale=5.0,
+    #         n_prompt="",
+    #         seed=-1,
+    #         offload_model=True):
+        
+    #     # Initialize timing dictionary
+    #     timings = {
+    #         "t5_encoder": 0.0,
+    #         "wan_model_conditional": 0.0,
+    #         "wan_model_unconditional": 0.0,
+    #         "vae_decode": 0.0
+    #     }
+        
+    #     # Original preprocessing code...
+    #     F = frame_num
+    #     target_shape = (self.vae.model.z_dim, (F - 1) // self.vae_stride[0] + 1,
+    #                     size[1] // self.vae_stride[1],
+    #                     size[0] // self.vae_stride[2])
+    #     seq_len = math.ceil((target_shape[2] * target_shape[3]) /
+    #                         (self.patch_size[1] * self.patch_size[2]) *
+    #                         target_shape[1] / self.sp_size) * self.sp_size
+
+    #     if n_prompt == "":
+    #         n_prompt = self.sample_neg_prompt
+    #     seed = seed if seed >= 0 else random.randint(0, sys.maxsize)
+    #     seed_g = torch.Generator(device=self.device)
+    #     seed_g.manual_seed(seed)
+
+    #     # Time T5 encoder
+    #     start_t5 = torch.cuda.Event(enable_timing=True)
+    #     end_t5 = torch.cuda.Event(enable_timing=True)
+        
+    #     start_t5.record()
+    #     if not self.t5_cpu:
+    #         self.text_encoder.model.to(self.device)
+    #         context = self.text_encoder([input_prompt], self.device)
+    #         context_null = self.text_encoder([n_prompt], self.device)
+    #         if offload_model:
+    #             self.text_encoder.model.cpu()
+    #     else:
+    #         context = self.text_encoder([input_prompt], torch.device('cpu'))
+    #         context_null = self.text_encoder([n_prompt], torch.device('cpu'))
+    #         context = [t.to(self.device) for t in context]
+    #         context_null = [t.to(self.device) for t in context_null]
+    #     end_t5.record()
+    #     torch.cuda.synchronize()
+    #     timings["t5_encoder"] = start_t5.elapsed_time(end_t5)
+
+    #     noise = [
+    #         torch.randn(
+    #             target_shape[0],
+    #             target_shape[1],
+    #             target_shape[2],
+    #             target_shape[3],
+    #             dtype=torch.float32,
+    #             device=self.device,
+    #             generator=seed_g)
+    #     ]
+
+    #     @contextmanager
+    #     def noop_no_sync():
+    #         yield
+
+    #     no_sync = getattr(self.model, 'no_sync', noop_no_sync)
+
+    #     # evaluation mode
+    #     with amp.autocast(dtype=self.param_dtype), torch.no_grad(), no_sync():
+    #         # Original scheduler setup...
+    #         if sample_solver == 'unipc':
+    #             sample_scheduler = FlowUniPCMultistepScheduler(
+    #                 num_train_timesteps=self.num_train_timesteps,
+    #                 shift=1,
+    #                 use_dynamic_shifting=False)
+    #             sample_scheduler.set_timesteps(
+    #                 sampling_steps, device=self.device, shift=shift)
+    #             timesteps = sample_scheduler.timesteps
+    #         elif sample_solver == 'dpm++':
+    #             sample_scheduler = FlowDPMSolverMultistepScheduler(
+    #                 num_train_timesteps=self.num_train_timesteps,
+    #                 shift=1,
+    #                 use_dynamic_shifting=False)
+    #             sampling_sigmas = get_sampling_sigmas(sampling_steps, shift)
+    #             timesteps, _ = retrieve_timesteps(
+    #                 sample_scheduler,
+    #                 device=self.device,
+    #                 sigmas=sampling_sigmas)
+    #         else:
+    #             raise NotImplementedError("Unsupported solver.")
+
+    #         # sample videos
+    #         latents = noise
+    #         arg_c = {'context': context, 'seq_len': seq_len}
+    #         arg_null = {'context': context_null, 'seq_len': seq_len}
+
+    #         # Time WanModel in diffusion loop
+    #         for i, t in enumerate(tqdm(timesteps)):
+    #             latent_model_input = latents
+    #             timestep = [t]
+    #             timestep = torch.stack(timestep)
+
+    #             self.model.to(self.device)
+                
+    #             # Time conditional model call
+    #             start_cond = torch.cuda.Event(enable_timing=True)
+    #             end_cond = torch.cuda.Event(enable_timing=True)
+                
+    #             start_cond.record()
+    #             noise_pred_cond = self.model(latent_model_input, t=timestep, **arg_c)[0]
+    #             end_cond.record()
+    #             torch.cuda.synchronize()
+    #             timings["wan_model_conditional"] += start_cond.elapsed_time(end_cond)
+                
+    #             # Time unconditional model call
+    #             start_uncond = torch.cuda.Event(enable_timing=True)
+    #             end_uncond = torch.cuda.Event(enable_timing=True)
+                
+    #             start_uncond.record()
+    #             noise_pred_uncond = self.model(latent_model_input, t=timestep, **arg_null)[0]
+    #             end_uncond.record()
+    #             torch.cuda.synchronize()
+    #             timings["wan_model_unconditional"] += start_uncond.elapsed_time(end_uncond)
+
+    #             # Rest of the step logic
+    #             noise_pred = noise_pred_uncond + guide_scale * (
+    #                 noise_pred_cond - noise_pred_uncond)
+
+    #             temp_x0 = sample_scheduler.step(
+    #                 noise_pred.unsqueeze(0),
+    #                 t,
+    #                 latents[0].unsqueeze(0),
+    #                 return_dict=False,
+    #                 generator=seed_g)[0]
+    #             latents = [temp_x0.squeeze(0)]
+
+    #         x0 = latents
+    #         if offload_model:
+    #             self.model.cpu()
+    #             torch.cuda.empty_cache()
+            
+    #         # Time VAE decoding
+    #         if self.rank == 0:
+    #             start_vae = torch.cuda.Event(enable_timing=True)
+    #             end_vae = torch.cuda.Event(enable_timing=True)
+                
+    #             start_vae.record()
+    #             videos = self.vae.decode(x0)
+    #             end_vae.record()
+    #             torch.cuda.synchronize()
+    #             timings["vae_decode"] = start_vae.elapsed_time(end_vae)
+
+    #     # Original cleanup code
+    #     del noise, latents
+    #     del sample_scheduler
+    #     if offload_model:
+    #         gc.collect()
+    #         torch.cuda.synchronize()
+    #     if dist.is_initialized():
+    #         dist.barrier()
+
+    #     # Print timing summary
+    #     if self.rank == 0:
+    #         print("\n===== Model Timing Summary =====")
+    #         print(f"T5 Text Encoder: {timings['t5_encoder']:.2f} ms")
+    #         print(f"WanModel (Conditional): {timings['wan_model_conditional']:.2f} ms")
+    #         print(f"WanModel (Unconditional): {timings['wan_model_unconditional']:.2f} ms")
+    #         total_model_time = timings['wan_model_conditional'] + timings['wan_model_unconditional']
+    #         print(f"WanModel Total: {total_model_time:.2f} ms")
+    #         print(f"Average time per diffusion step: {total_model_time/len(timesteps):.2f} ms")
+    #         print(f"VAE Decoding: {timings['vae_decode']:.2f} ms")
+    #         print("==============================\n")
+
+    #     return videos[0] if self.rank == 0 else None
