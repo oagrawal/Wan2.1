@@ -491,6 +491,9 @@ class WanModel(ModelMixin, ConfigMixin):
         if self.model_type == 'i2v':
             assert clip_fea is not None and y is not None
         
+
+        print(f"-----t is {t}------; shape of t is {t.shape}")
+
         # params
         device = self.patch_embedding.weight.device
         if self.freqs.device != device:
