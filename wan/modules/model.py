@@ -509,6 +509,25 @@ class WanModel(ModelMixin, ConfigMixin):
             List[Tensor]:
                 List of denoised video tensors with original input shapes [C_out, F, H / 8, W / 8]
         """
+
+        # Print initial inputs
+        print("=== INITIAL INPUTS ===")
+        print(f"x type: {type(x)}, length: {len(x)}")
+        for i, tensor in enumerate(x):
+            print(f"x[{i}] shape: {tensor.shape}, dtype: {tensor.dtype}")
+            print(f"x[{i}] first few values: {tensor.flatten()[:5]}")
+        
+        print(f"t shape: {t.shape}, dtype: {t.dtype}")
+        print(f"t values: {t}")
+        
+        print(f"context type: {type(context)}, length: {len(context)}")
+        for i, tensor in enumerate(context):
+            print(f"context[{i}] shape: {tensor.shape}, dtype: {tensor.dtype}")
+            print(f"context[{i}] first few values: {tensor.flatten()[:5]}")
+
+
+
+
         if self.model_type == 'i2v':
             assert clip_fea is not None and y is not None
         # params
