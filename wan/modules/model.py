@@ -511,19 +511,10 @@ class WanModel(ModelMixin, ConfigMixin):
         """
 
         # Print initial inputs
-        print("=== INITIAL INPUTS ===")
-        print(f"x type: {type(x)}, length: {len(x)}")
-        for i, tensor in enumerate(x):
-            print(f"x[{i}] shape: {tensor.shape}, dtype: {tensor.dtype}")
-            print(f"x[{i}] first few values: {tensor.flatten()[:5]}")
-        
-        print(f"t shape: {t.shape}, dtype: {t.dtype}")
-        print(f"t values: {t}")
-        
-        print(f"context type: {type(context)}, length: {len(context)}")
-        for i, tensor in enumerate(context):
-            print(f"context[{i}] shape: {tensor.shape}, dtype: {tensor.dtype}")
-            print(f"context[{i}] first few values: {tensor.flatten()[:5]}")
+        print(f"\n === UNDERSTANDING CURRENT BATCHING ===")
+        print(f"x: {len(x)} videos, shapes: {[u.shape for u in x]}")
+        print(f"t: {t.shape} - batch size: {t.shape[0]}")
+        print(f"context: {len(context)} texts, shapes: {[u.shape for u in context]}\n")
 
 
 
