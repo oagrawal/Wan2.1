@@ -530,17 +530,17 @@ class WanModel(ModelMixin, ConfigMixin):
         """
 
         # Print initial inputs
-        print(f"\n === ORIGINAL DATA ===")
-        print(f"x: {len(x)} videos, shapes: {[u.shape for u in x]}")
-        print(f"t: {t.shape} - batch size: {t.shape[0]}")
-        print(f"context: {len(context)} texts, shapes: {[u.shape for u in context]}\n")
+        # print(f"\n === ORIGINAL DATA ===")
+        # print(f"x: {len(x)} videos, shapes: {[u.shape for u in x]}")
+        # print(f"t: {t.shape} - batch size: {t.shape[0]}")
+        # print(f"context: {len(context)} texts, shapes: {[u.shape for u in context]}\n")
 
-        x, t, context = create_batch_test_data(x, t, context)
+        # x, t, context = create_batch_test_data(x, t, context)
 
-        print(f"\n=== BATCH TEST DATA ===")
-        print(f"Batch x: {len(x)} videos, shapes: {[u.shape for u in x]}")
-        print(f"Batch t: {t.shape}, values: {t}")
-        print(f"Batch context: {len(context)} texts, shapes: {[u.shape for u in context]}\n")
+        # print(f"\n=== BATCH TEST DATA ===")
+        # print(f"Batch x: {len(x)} videos, shapes: {[u.shape for u in x]}")
+        # print(f"Batch t: {t.shape}, values: {t}")
+        # print(f"Batch context: {len(context)} texts, shapes: {[u.shape for u in context]}\n")
 
 
 

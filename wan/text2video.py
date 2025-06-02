@@ -26,6 +26,82 @@ from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 which_gpu = 0
 
 
+def test_batchability(model, x, t, context, seq_len, clip_fea=None, y=None, batch_size=2):
+    print("=== ORIGINAL DATA ===")
+    print(f"Original x: {len(x)} videos, shapes: {[u.shape for u in x]}")
+    print(f"Original t: {t.shape}")
+    print(f"Original context: {len(context)} texts, shapes: {[u.shape for u in context]}")
+    
+    # Create batch test data
+    x_batch, t_batch, context_batch = create_batch_test_data(x, t, context, batch_size)
+    
+    print("\n=== BATCH TEST DATA ===")
+    print(f"Batch x: {len(x_batch)} videos, shapes: {[u.shape for u in x_batch]}")
+    print(f"Batch t: {t_batch.shape}, values: {t_batch}")
+    print(f"Batch context: {len(context_batch)} texts, shapes: {[u.shape for u in context_batch]}")
+    
+    # Test original vs batch processing
+    print("\n=== RUNNING ORIGINAL MODEL ===")
+    output_original = model.forward(x, t, context, seq_len, clip_fea, y)
+    
+    print("\n=== RUNNING BATCH MODEL ===")
+    output_batch = model.forward(x_batch, t_batch, context_batch, seq_len, clip_fea, y)
+    
+    print("\n=== OUTPUT COMPARISON ===")
+    print(f"Original output: {len(output_original)} tensors")
+    for i, out in enumerate(output_original):
+        print(f"  output[{i}] shape: {out.shape}")
+    
+    print(f"Batch output: {len(output_batch)} tensors")
+    for i, out in enumerate(output_batch):
+        print(f"  output[{i}] shape: {out.shape}")
+    
+    # Verify consistency (check if batch output contains duplicated original output)
+    print("\n=== CONSISTENCY CHECK ===")
+    if len(output_batch) == len(output_original) * batch_size:
+        print("✓ Output length scales correctly with batch size")
+        
+        # Check if outputs are duplicated correctly
+        for i in range(len(output_original)):
+            original_tensor = output_original[i]
+            batch_tensor_1 = output_batch[i]
+            batch_tensor_2 = output_batch[i + len(output_original)]
+            
+            if batch_tensor_1.shape == original_tensor.shape and batch_tensor_2.shape == original_tensor.shape:
+                print(f"✓ Output[{i}] shapes match")
+                
+                # Check numerical similarity (within floating point tolerance)
+                if torch.allclose(batch_tensor_1, original_tensor, atol=1e-5) and torch.allclose(batch_tensor_2, original_tensor, atol=1e-5):
+                    print(f"✓ Output[{i}] values match (duplicated correctly)")
+                else:
+                    print(f"✗ Output[{i}] values don't match - model may not be deterministic or has batching issues")
+            else:
+                print(f"✗ Output[{i}] shapes don't match")
+    else:
+        print("✗ Output length doesn't scale correctly - possible batching issue")
+    
+    return output_original, output_batch
+
+def create_batch_test_data(x, t, context, batch_size=2):
+    """
+    Create batch test data based on observed shapes:
+    - x: list with 1 tensor [16, 21, 60, 104] 
+    - t: tensor [1]
+    - context: list with 1 tensor [20/126, 4096]
+    """
+    # For x: duplicate the tensor within the list to simulate multiple videos
+    x_batch = x * batch_size  # Creates [tensor1, tensor1] for batch_size=2
+    
+    # For t: create proper batch dimension 
+    t_batch = t.repeat(batch_size)  # [1] -> [1, 1] for batch_size=2
+    
+    # For context: duplicate the tensor within the list
+    context_batch = context * batch_size  # Creates [tensor1, tensor1] for batch_size=2
+    
+    return x_batch, t_batch, context_batch
+
+
+
 class WanT2V:
 
     def __init__(
@@ -225,6 +301,8 @@ class WanT2V:
 
                 self.model.to(self.device)
                 
+                test_batchability(self.model, latent_model_input, timestep, arg_c['context'], arg_c['seq_len'])
+
                 # Time conditional model call
                 start_cond = torch.cuda.Event(enable_timing=True)
                 end_cond = torch.cuda.Event(enable_timing=True)
