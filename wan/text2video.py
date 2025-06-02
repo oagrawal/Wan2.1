@@ -62,21 +62,72 @@ def test_batchability(model, x, t, context, seq_len, clip_fea=None, y=None, batc
         print("✓ Output length scales correctly with batch size")
         
         # Check if outputs are duplicated correctly
-        for i in range(len(output_original)):
-            original_tensor = output_original[i]
-            batch_tensor_1 = output_batch[i]
-            batch_tensor_2 = output_batch[i + len(output_original)]
+        original_tensor = output_original[0]
+        batch_tensor_1 = output_batch[0]
+        batch_tensor_2 = output_batch[1]
             
-            if batch_tensor_1.shape == original_tensor.shape and batch_tensor_2.shape == original_tensor.shape:
-                print(f"✓ Output[{i}] shapes match")
-                
-                # Check numerical similarity (within floating point tolerance)
-                if torch.allclose(batch_tensor_1, original_tensor, atol=1e-5) and torch.allclose(batch_tensor_2, original_tensor, atol=1e-5):
-                    print(f"✓ Output[{i}] values match (duplicated correctly)")
-                else:
-                    print(f"✗ Output[{i}] values don't match - model may not be deterministic or has batching issues")
+        if batch_tensor_1.shape == original_tensor.shape and batch_tensor_2.shape == original_tensor.shape:
+            print(f"✓ Output[{i}] shapes match")
+            
+            # Check numerical similarity (within floating point tolerance)
+            # Check numerical similarity (within floating point tolerance)
+            if torch.allclose(batch_tensor_1, original_tensor, atol=1e-5) and torch.allclose(batch_tensor_2, original_tensor, atol=1e-5):
+                print(f"✓ Output values match (duplicated correctly)")
             else:
-                print(f"✗ Output[{i}] shapes don't match")
+                print(f"✗ Output values don't match - model may not be deterministic or has batching issues")
+                
+                # Print tensors here
+                print("\n=== TENSOR VALUE COMPARISON ===")
+                
+                # Original tensor info
+                orig_flat = original_tensor.flatten()
+                print(f"Original tensor:")
+                print(f"  Shape: {original_tensor.shape}")
+                print(f"  Dtype: {original_tensor.dtype}")
+                print(f"  First 10 values: {orig_flat[:10].tolist()}")
+                print(f"  Min: {original_tensor.min().item():.6f}, Max: {original_tensor.max().item():.6f}")
+                print(f"  Mean: {original_tensor.mean().item():.6f}, Std: {original_tensor.std().item():.6f}")
+                
+                # Batch tensor 1 info
+                batch1_flat = batch_tensor_1.flatten()
+                print(f"\nBatch tensor 1:")
+                print(f"  Shape: {batch_tensor_1.shape}")
+                print(f"  Dtype: {batch_tensor_1.dtype}")
+                print(f"  First 10 values: {batch1_flat[:10].tolist()}")
+                print(f"  Min: {batch_tensor_1.min().item():.6f}, Max: {batch_tensor_1.max().item():.6f}")
+                print(f"  Mean: {batch_tensor_1.mean().item():.6f}, Std: {batch_tensor_1.std().item():.6f}")
+                
+                # Batch tensor 2 info
+                batch2_flat = batch_tensor_2.flatten()
+                print(f"\nBatch tensor 2:")
+                print(f"  Shape: {batch_tensor_2.shape}")
+                print(f"  Dtype: {batch_tensor_2.dtype}")
+                print(f"  First 10 values: {batch2_flat[:10].tolist()}")
+                print(f"  Min: {batch_tensor_2.min().item():.6f}, Max: {batch_tensor_2.max().item():.6f}")
+                print(f"  Mean: {batch_tensor_2.mean().item():.6f}, Std: {batch_tensor_2.std().item():.6f}")
+                
+                # Difference analysis
+                diff_1_orig = torch.abs(batch_tensor_1 - original_tensor)
+                diff_2_orig = torch.abs(batch_tensor_2 - original_tensor)
+                diff_1_2 = torch.abs(batch_tensor_1 - batch_tensor_2)
+                
+                print(f"\n=== DIFFERENCE ANALYSIS ===")
+                print(f"Max difference (batch1 vs original): {diff_1_orig.max().item():.8f}")
+                print(f"Mean difference (batch1 vs original): {diff_1_orig.mean().item():.8f}")
+                print(f"Max difference (batch2 vs original): {diff_2_orig.max().item():.8f}")
+                print(f"Mean difference (batch2 vs original): {diff_2_orig.mean().item():.8f}")
+                print(f"Max difference (batch1 vs batch2): {diff_1_2.max().item():.8f}")
+                print(f"Mean difference (batch1 vs batch2): {diff_1_2.mean().item():.8f}")
+                
+                # Check if differences are close to tolerance
+                print(f"\n=== TOLERANCE CHECK (atol=1e-5) ===")
+                print(f"Batch1 vs Original within tolerance: {torch.allclose(batch_tensor_1, original_tensor, atol=1e-5, rtol=1e-5)}")
+                print(f"Batch2 vs Original within tolerance: {torch.allclose(batch_tensor_2, original_tensor, atol=1e-5, rtol=1e-5)}")
+                print(f"Batch1 vs Batch2 within tolerance: {torch.allclose(batch_tensor_1, batch_tensor_2, atol=1e-5, rtol=1e-5)}")
+
+        else:
+            print(f"✗ Output shapes don't match")
+
     else:
         print("✗ Output length doesn't scale correctly - possible batching issue")
     
