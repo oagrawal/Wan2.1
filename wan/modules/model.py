@@ -358,6 +358,25 @@ class MLPProj(torch.nn.Module):
         return clip_extra_context_tokens
 
 
+def create_batch_test_data(x, t, context, batch_size=2):
+    """
+    Create batch test data based on observed shapes:
+    - x: list with 1 tensor [16, 21, 60, 104] 
+    - t: tensor [1]
+    - context: list with 1 tensor [20/126, 4096]
+    """
+    # For x: duplicate the tensor within the list to simulate multiple videos
+    x_batch = x * batch_size  # Creates [tensor1, tensor1] for batch_size=2
+    
+    # For t: create proper batch dimension 
+    t_batch = t.repeat(batch_size)  # [1] -> [1, 1] for batch_size=2
+    
+    # For context: duplicate the tensor within the list
+    context_batch = context * batch_size  # Creates [tensor1, tensor1] for batch_size=2
+    
+    return x_batch, t_batch, context_batch
+
+
 class WanModel(ModelMixin, ConfigMixin):
     r"""
     Wan diffusion backbone supporting both text-to-video and image-to-video.
@@ -511,11 +530,17 @@ class WanModel(ModelMixin, ConfigMixin):
         """
 
         # Print initial inputs
-        print(f"\n === UNDERSTANDING CURRENT BATCHING ===")
+        print(f"\n === ORIGINAL DATA ===")
         print(f"x: {len(x)} videos, shapes: {[u.shape for u in x]}")
         print(f"t: {t.shape} - batch size: {t.shape[0]}")
         print(f"context: {len(context)} texts, shapes: {[u.shape for u in context]}\n")
 
+        x, t, context = create_batch_test_data(x, t, context)
+
+        print(f"\n=== BATCH TEST DATA ===")
+        print(f"Batch x: {len(x)} videos, shapes: {[u.shape for u in x]}")
+        print(f"Batch t: {t.shape}, values: {t}")
+        print(f"Batch context: {len(context)} texts, shapes: {[u.shape for u in context]}\n")
 
 
 
