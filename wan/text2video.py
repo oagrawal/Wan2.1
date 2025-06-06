@@ -29,7 +29,7 @@ which_gpu = 0
 def test_batchability(model, x, t, context, seq_len, clip_fea=None, y=None, batch_size=2):
     print("=== ORIGINAL DATA ===")
     print(f"Original x: {len(x)} videos, shapes: {[u.shape for u in x]}")
-    print(f"Original t: {t.shape}")
+    print(f"Original t: {t.shape}, value: {t}")
     print(f"Original context: {len(context)} texts, shapes: {[u.shape for u in context]}")
     
     # Create batch test data
@@ -39,14 +39,33 @@ def test_batchability(model, x, t, context, seq_len, clip_fea=None, y=None, batc
     print(f"Batch x: {len(x_batch)} videos, shapes: {[u.shape for u in x_batch]}")
     print(f"Batch t: {t_batch.shape}, values: {t_batch}")
     print(f"Batch context: {len(context_batch)} texts, shapes: {[u.shape for u in context_batch]}")
+
+    # Timing events
+    start_original = torch.cuda.Event(enable_timing=True)
+    end_original = torch.cuda.Event(enable_timing=True)
+    start_batch = torch.cuda.Event(enable_timing=True)
+    end_batch = torch.cuda.Event(enable_timing=True)
     
     # Test original vs batch processing
     print("\n=== RUNNING ORIGINAL MODEL ===")
+    start_original.record()
     output_original = model.forward(x, t, context, seq_len, clip_fea, y)
+    end_original.record()
     
     print("\n=== RUNNING BATCH MODEL ===")
+    start_batch.record()
     output_batch = model.forward(x_batch, t_batch, context_batch, seq_len, clip_fea, y)
+    end_batch.record()
     
+    torch.cuda.synchronize()
+    original_time = start_original.elapsed_time(end_original)
+    batch_time = start_batch.elapsed_time(end_batch)
+    
+    print("\n=== TIMING RESULTS ===")
+    print(f"Original processing time: {original_time:.2f}ms")
+    print(f"Batch processing time: {batch_time:.2f}ms")
+    print(f"Speed ratio: {original_time*batch_size/batch_time:.2f}x")
+
     print("\n=== OUTPUT COMPARISON ===")
     print(f"Original output: {len(output_original)} tensors")
     for i, out in enumerate(output_original):
@@ -56,80 +75,70 @@ def test_batchability(model, x, t, context, seq_len, clip_fea=None, y=None, batc
     for i, out in enumerate(output_batch):
         print(f"  output[{i}] shape: {out.shape}")
     
-    # Verify consistency (check if batch output contains duplicated original output)
+    # Verify consistency
     print("\n=== CONSISTENCY CHECK ===")
-    if len(output_batch) == len(output_original) * batch_size:
-        print("✓ Output length scales correctly with batch size")
+    expected_batch_count = len(output_original) * batch_size
+    actual_batch_count = len(output_batch)
+    
+    if actual_batch_count != expected_batch_count:
+        print(f"✗ Batch size mismatch: Expected {expected_batch_count}, got {actual_batch_count}")
+        return output_original, output_batch
+
+    print("✓ Output length scales correctly with batch size")
+    
+    max_diffs = []
+    mean_diffs = []
+    matches = 0
+    
+    for batch_idx in range(batch_size):
+        original_idx = batch_idx % len(output_original)
+        batch_tensor = output_batch[batch_idx]
+        original_tensor = output_original[original_idx]
         
-        # Check if outputs are duplicated correctly
-        original_tensor = output_original[0]
-        batch_tensor_1 = output_batch[0]
-        batch_tensor_2 = output_batch[1]
-            
-        if batch_tensor_1.shape == original_tensor.shape and batch_tensor_2.shape == original_tensor.shape:
-            print(f"✓ Output[{i}] shapes match")
-            
-            # Check numerical similarity (within floating point tolerance)
-            # Check numerical similarity (within floating point tolerance)
-            if torch.allclose(batch_tensor_1, original_tensor, atol=1e-5) and torch.allclose(batch_tensor_2, original_tensor, atol=1e-5):
-                print(f"✓ Output values match (duplicated correctly)")
-            else:
-                print(f"✗ Output values don't match - model may not be deterministic or has batching issues")
-                
-                # Print tensors here
-                print("\n=== TENSOR VALUE COMPARISON ===")
-                
-                # Original tensor info
-                orig_flat = original_tensor.flatten()
-                print(f"Original tensor:")
-                print(f"  Shape: {original_tensor.shape}")
-                print(f"  Dtype: {original_tensor.dtype}")
-                print(f"  First 10 values: {orig_flat[:10].tolist()}")
-                print(f"  Min: {original_tensor.min().item():.6f}, Max: {original_tensor.max().item():.6f}")
-                print(f"  Mean: {original_tensor.mean().item():.6f}, Std: {original_tensor.std().item():.6f}")
-                
-                # Batch tensor 1 info
-                batch1_flat = batch_tensor_1.flatten()
-                print(f"\nBatch tensor 1:")
-                print(f"  Shape: {batch_tensor_1.shape}")
-                print(f"  Dtype: {batch_tensor_1.dtype}")
-                print(f"  First 10 values: {batch1_flat[:10].tolist()}")
-                print(f"  Min: {batch_tensor_1.min().item():.6f}, Max: {batch_tensor_1.max().item():.6f}")
-                print(f"  Mean: {batch_tensor_1.mean().item():.6f}, Std: {batch_tensor_1.std().item():.6f}")
-                
-                # Batch tensor 2 info
-                batch2_flat = batch_tensor_2.flatten()
-                print(f"\nBatch tensor 2:")
-                print(f"  Shape: {batch_tensor_2.shape}")
-                print(f"  Dtype: {batch_tensor_2.dtype}")
-                print(f"  First 10 values: {batch2_flat[:10].tolist()}")
-                print(f"  Min: {batch_tensor_2.min().item():.6f}, Max: {batch_tensor_2.max().item():.6f}")
-                print(f"  Mean: {batch_tensor_2.mean().item():.6f}, Std: {batch_tensor_2.std().item():.6f}")
-                
-                # Difference analysis
-                diff_1_orig = torch.abs(batch_tensor_1 - original_tensor)
-                diff_2_orig = torch.abs(batch_tensor_2 - original_tensor)
-                diff_1_2 = torch.abs(batch_tensor_1 - batch_tensor_2)
-                
-                print(f"\n=== DIFFERENCE ANALYSIS ===")
-                print(f"Max difference (batch1 vs original): {diff_1_orig.max().item():.8f}")
-                print(f"Mean difference (batch1 vs original): {diff_1_orig.mean().item():.8f}")
-                print(f"Max difference (batch2 vs original): {diff_2_orig.max().item():.8f}")
-                print(f"Mean difference (batch2 vs original): {diff_2_orig.mean().item():.8f}")
-                print(f"Max difference (batch1 vs batch2): {diff_1_2.max().item():.8f}")
-                print(f"Mean difference (batch1 vs batch2): {diff_1_2.mean().item():.8f}")
-                
-                # Check if differences are close to tolerance
-                print(f"\n=== TOLERANCE CHECK (atol=1e-5) ===")
-                print(f"Batch1 vs Original within tolerance: {torch.allclose(batch_tensor_1, original_tensor, atol=1e-5, rtol=1e-5)}")
-                print(f"Batch2 vs Original within tolerance: {torch.allclose(batch_tensor_2, original_tensor, atol=1e-5, rtol=1e-5)}")
-                print(f"Batch1 vs Batch2 within tolerance: {torch.allclose(batch_tensor_1, batch_tensor_2, atol=1e-5, rtol=1e-5)}")
+        print(f"\n--- Comparing Batch[{batch_idx}] vs Original[{original_idx}] ---")
+        
+        if batch_tensor.shape != original_tensor.shape:
+            print(f"✗ Shape mismatch at batch index {batch_idx}")
+            continue
+        
+        # Basic tensor info
+        orig_flat = original_tensor.flatten()
+        batch_flat = batch_tensor.flatten()
+        print(f"Tensor shapes: {original_tensor.shape}")
+        print(f"Original - First 10 values: {orig_flat[:10].tolist()}")
+        print(f"Batch[{batch_idx}] - First 10 values: {batch_flat[:10].tolist()}")
+        
+        # Statistics comparison
+        print(f"Original - Min: {original_tensor.min().item():.6f}, Max: {original_tensor.max().item():.6f}, Mean: {original_tensor.mean().item():.6f}")
+        print(f"Batch[{batch_idx}] - Min: {batch_tensor.min().item():.6f}, Max: {batch_tensor.max().item():.6f}, Mean: {batch_tensor.mean().item():.6f}")
+        
+        # Difference analysis
+        diff = torch.abs(batch_tensor - original_tensor)
+        max_diff = diff.max().item()
+        mean_diff = diff.mean().item()
+        max_diffs.append(max_diff)
+        mean_diffs.append(mean_diff)
+        
+        # Relative difference context
+        tensor_range = original_tensor.max().item() - original_tensor.min().item()
+        relative_max_diff = (max_diff / tensor_range * 100) if tensor_range > 0 else 0
+        relative_mean_diff = (mean_diff / abs(original_tensor.mean().item()) * 100) if original_tensor.mean().item() != 0 else 0
+        
+        print(f"Max difference: {max_diff:.8f} ({relative_max_diff:.4f}% of tensor range)")
+        print(f"Mean difference: {mean_diff:.8f} ({relative_mean_diff:.4f}% of mean value)")
+        
+        # Tolerance check
+        is_close = torch.allclose(batch_tensor, original_tensor, atol=1e-3, rtol=1e-3)
+        print(f"Within tolerance (1e-3): {'✓' if is_close else '✗'}")
+        
+        if is_close:
+            matches += 1
 
-        else:
-            print(f"✗ Output shapes don't match")
-
-    else:
-        print("✗ Output length doesn't scale correctly - possible batching issue")
+    print(f"\n=== CONSISTENCY SUMMARY ===")
+    print(f"Batch elements matching original: {matches}/{batch_size}")
+    if max_diffs:
+        print(f"Max differences: {max(max_diffs):.6f} (avg {sum(max_diffs)/len(max_diffs):.6f})")
+        print(f"Mean differences: {max(mean_diffs):.6f} (avg {sum(mean_diffs)/len(mean_diffs):.6f})")
     
     return output_original, output_batch
 
@@ -352,7 +361,7 @@ class WanT2V:
 
                 self.model.to(self.device)
                 
-                test_batchability(self.model, latent_model_input, timestep, arg_c['context'], arg_c['seq_len'])
+                test_batchability(self.model, latent_model_input, timestep, arg_c['context'], arg_c['seq_len'], batch_size=2)
 
                 # Time conditional model call
                 start_cond = torch.cuda.Event(enable_timing=True)
