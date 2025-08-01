@@ -361,7 +361,7 @@ class WanT2V:
 
                 self.model.to(self.device)
                 
-                test_batchability(self.model, latent_model_input, timestep, arg_c['context'], arg_c['seq_len'], batch_size=2)
+                # test_batchability(self.model, latent_model_input, timestep, arg_c['context'], arg_c['seq_len'], batch_size=2)
 
                 # Time conditional model call
                 start_cond = torch.cuda.Event(enable_timing=True)
