@@ -589,58 +589,58 @@ def teacache_forward(
         # teacache
         if self.cnt%2==0: # even -> conditon
             self.is_even = True
-            # if self.cnt < self.ret_steps or self.cnt >= self.cutoff_steps:
-            #         should_calc_even = True
-            #         self.accumulated_rel_l1_distance_even = 0
-            # else:
-            #     rescale_func = np.poly1d(self.coefficients)
-            #     self.accumulated_rel_l1_distance_even += rescale_func(((modulated_inp-self.previous_e0_even).abs().mean() / self.previous_e0_even.abs().mean()).cpu().item())
-            #     if self.accumulated_rel_l1_distance_even < self.teacache_thresh:
-            #         should_calc_even = False
-            #     else:
-            #         should_calc_even = True
-            #         self.accumulated_rel_l1_distance_even = 0
-            # self.previous_e0_even = modulated_inp.clone()
-
-            should_calc_even = True
-            # Only calculate if we have a previous value (skip first step)
-            if hasattr(self, 'previous_e0_even') and self.previous_e0_even is not None:
+            if self.cnt < self.ret_steps or self.cnt >= self.cutoff_steps:
+                    should_calc_even = True
+                    self.accumulated_rel_l1_distance_even = 0
+            else:
                 rescale_func = np.poly1d(self.coefficients)
                 self.accumulated_rel_l1_distance_even += rescale_func(((modulated_inp-self.previous_e0_even).abs().mean() / self.previous_e0_even.abs().mean()).cpu().item())
-                
-                # Store the accumulated metric and step number
-                self.metric_history["even_accumulated"].append(self.accumulated_rel_l1_distance_even)
-                self.metric_history["even_timesteps"].append(self.cnt)
-            
+                if self.accumulated_rel_l1_distance_even < self.teacache_thresh:
+                    should_calc_even = False
+                else:
+                    should_calc_even = True
+                    self.accumulated_rel_l1_distance_even = 0
             self.previous_e0_even = modulated_inp.clone()
+
+            # should_calc_even = True
+            # # Only calculate if we have a previous value (skip first step)
+            # if hasattr(self, 'previous_e0_even') and self.previous_e0_even is not None:
+            #     rescale_func = np.poly1d(self.coefficients)
+            #     self.accumulated_rel_l1_distance_even += rescale_func(((modulated_inp-self.previous_e0_even).abs().mean() / self.previous_e0_even.abs().mean()).cpu().item())
+                
+            #     # Store the accumulated metric and step number
+            #     self.metric_history["even_accumulated"].append(self.accumulated_rel_l1_distance_even)
+            #     self.metric_history["even_timesteps"].append(self.cnt)
+            
+            # self.previous_e0_even = modulated_inp.clone()
 
         else: # odd -> unconditon
             self.is_even = False
-            # if self.cnt < self.ret_steps or self.cnt >= self.cutoff_steps:
-            #         should_calc_odd = True
-            #         self.accumulated_rel_l1_distance_odd = 0
-            # else: 
-            #     rescale_func = np.poly1d(self.coefficients)
-            #     self.accumulated_rel_l1_distance_odd += rescale_func(((modulated_inp-self.previous_e0_odd).abs().mean() / self.previous_e0_odd.abs().mean()).cpu().item())
-            #     if self.accumulated_rel_l1_distance_odd < self.teacache_thresh:
-            #         should_calc_odd = False
-            #     else:
-            #         should_calc_odd = True
-            #         self.accumulated_rel_l1_distance_odd = 0
-            # self.previous_e0_odd = modulated_inp.clone()
-
-
-            should_calc_odd = True
-            # Only calculate if we have a previous value (skip first step) 
-            if hasattr(self, 'previous_e0_odd') and self.previous_e0_odd is not None:
+            if self.cnt < self.ret_steps or self.cnt >= self.cutoff_steps:
+                    should_calc_odd = True
+                    self.accumulated_rel_l1_distance_odd = 0
+            else: 
                 rescale_func = np.poly1d(self.coefficients)
                 self.accumulated_rel_l1_distance_odd += rescale_func(((modulated_inp-self.previous_e0_odd).abs().mean() / self.previous_e0_odd.abs().mean()).cpu().item())
-                
-                # Store the accumulated metric and step number - FIXED THE BUG HERE
-                self.metric_history["odd_accumulated"].append(self.accumulated_rel_l1_distance_odd)
-                self.metric_history["odd_timesteps"].append(self.cnt)
-            
+                if self.accumulated_rel_l1_distance_odd < self.teacache_thresh:
+                    should_calc_odd = False
+                else:
+                    should_calc_odd = True
+                    self.accumulated_rel_l1_distance_odd = 0
             self.previous_e0_odd = modulated_inp.clone()
+
+
+            # should_calc_odd = True
+            # # Only calculate if we have a previous value (skip first step) 
+            # if hasattr(self, 'previous_e0_odd') and self.previous_e0_odd is not None:
+            #     rescale_func = np.poly1d(self.coefficients)
+            #     self.accumulated_rel_l1_distance_odd += rescale_func(((modulated_inp-self.previous_e0_odd).abs().mean() / self.previous_e0_odd.abs().mean()).cpu().item())
+                
+            #     # Store the accumulated metric and step number - FIXED THE BUG HERE
+            #     self.metric_history["odd_accumulated"].append(self.accumulated_rel_l1_distance_odd)
+            #     self.metric_history["odd_timesteps"].append(self.cnt)
+            
+            # self.previous_e0_odd = modulated_inp.clone()
 
     if self.enable_teacache: 
         if self.is_even:
