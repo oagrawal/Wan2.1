@@ -525,6 +525,15 @@ def teacache_forward(
         delta_temni_list = getattr(self, 'delta_TEMNI', None)
         no_cache_mode = (self.teacache_thresh == 0)
         rescale_func = np.poly1d(self.coefficients) if getattr(self, 'coefficients', None) is not None else None
+        # Adaptive: first N and last M forward steps (total, as on delta TEMNI plot) use low threshold, middle uses high
+        thresh_high = getattr(self, 'teacache_thresh_high', None)
+        if thresh_high is not None:
+            first_cnt = getattr(self, 'adaptive_first_steps', 10)   # number of forward steps (not sampling steps)
+            last_cnt = getattr(self, 'adaptive_last_steps', 16)
+            use_low = (self.cnt < first_cnt or self.cnt >= self.num_steps - last_cnt)
+            current_thresh = (self.teacache_thresh if use_low else thresh_high)
+        else:
+            current_thresh = self.teacache_thresh
 
         # teacache
         if self.cnt%2==0: # even -> conditon
@@ -543,7 +552,7 @@ def teacache_forward(
                     self.accumulated_rel_l1_distance_even = 0
             else:
                 self.accumulated_rel_l1_distance_even += rescale_func(((modulated_inp-self.previous_e0_even).abs().mean() / self.previous_e0_even.abs().mean()).cpu().item())
-                if self.accumulated_rel_l1_distance_even < self.teacache_thresh:
+                if self.accumulated_rel_l1_distance_even < current_thresh:
                     should_calc_even = False
                 else:
                     should_calc_even = True
@@ -567,7 +576,7 @@ def teacache_forward(
             else:
                 rescale_func = np.poly1d(self.coefficients)
                 self.accumulated_rel_l1_distance_odd += rescale_func(((modulated_inp-self.previous_e0_odd).abs().mean() / self.previous_e0_odd.abs().mean()).cpu().item())
-                if self.accumulated_rel_l1_distance_odd < self.teacache_thresh:
+                if self.accumulated_rel_l1_distance_odd < current_thresh:
                     should_calc_odd = False
                 else:
                     should_calc_odd = True
@@ -650,9 +659,9 @@ def _plot_delta_temni(model, save_file, log):
     plt.figure(figsize=(10, 6))
     x = range(1, len(delta_temni) + 1)
     plt.plot(x, delta_temni, 'g-', linewidth=2, marker='s', markersize=4)
-    plt.xlabel('Forward step (cond/uncond pair per solver step)')
+    plt.xlabel('Forward step (1 = first solver step, high t → right = last step, low t)')
     plt.ylabel('Delta TEMNI (rescaled relative L1)')
-    plt.title('Delta TEMNI over steps (no TeaCache)')
+    plt.title('Delta TEMNI over steps (no TeaCache); left=start of sampling, right=end')
     plt.grid(True, alpha=0.3)
     ax = plt.gca()
     step = max(1, len(delta_temni) // 20)
@@ -734,6 +743,11 @@ def _parse_args():
         default=None,
         help="The file to save the generated image or video to.")
     parser.add_argument(
+        "--no_delta_temni_plot",
+        action="store_true",
+        default=False,
+        help="Do not save delta TEMNI plot/txt (e.g. when running batch VBench).")
+    parser.add_argument(
         "--prompt",
         type=str,
         default=None,
@@ -793,6 +807,21 @@ def _parse_args():
         type=float,
         default=0.2,
         help="TeaCache threshold. 0 = no caching (baseline), but still record and plot delta TEMNI. 0.1 for ~2x speedup, 0.2 for ~3x speedup.")
+    parser.add_argument(
+        "--teacache_thresh_high",
+        type=float,
+        default=None,
+        help="If set, adaptive mode: use teacache_thresh for first/last N steps (low), this for middle (high).")
+    parser.add_argument(
+        "--teacache_adaptive_first_steps",
+        type=int,
+        default=10,
+        help="In adaptive mode: number of forward steps at start that use low threshold (default 10; matches delta TEMNI plot).")
+    parser.add_argument(
+        "--teacache_adaptive_last_steps",
+        type=int,
+        default=16,
+        help="In adaptive mode: number of forward steps at end that use low threshold (default 16; matches delta TEMNI plot).")
     parser.add_argument(
         "--use_ret_steps",
         action="store_true",
@@ -928,6 +957,9 @@ def generate(args):
         wan_t2v.model.__class__.cnt = 0
         wan_t2v.model.__class__.num_steps = args.sample_steps*2
         wan_t2v.model.__class__.teacache_thresh = args.teacache_thresh
+        wan_t2v.model.__class__.teacache_thresh_high = getattr(args, 'teacache_thresh_high', None)
+        wan_t2v.model.__class__.adaptive_first_steps = getattr(args, 'teacache_adaptive_first_steps', 10)
+        wan_t2v.model.__class__.adaptive_last_steps = getattr(args, 'teacache_adaptive_last_steps', 10)
         wan_t2v.model.__class__.accumulated_rel_l1_distance_even = 0
         wan_t2v.model.__class__.accumulated_rel_l1_distance_odd = 0
         wan_t2v.model.__class__.previous_e0_even = None
@@ -938,6 +970,10 @@ def generate(args):
         if args.teacache_thresh == 0:
             wan_t2v.model.delta_TEMNI = []
             logging.info("TeaCache threshold=0: no caching; delta TEMNI will be recorded and plotted.")
+        if getattr(args, 'teacache_thresh_high', None) is not None:
+            logging.info("TeaCache adaptive: first %d and last %d steps = thresh %.2f, middle = thresh %.2f",
+                         getattr(args, 'teacache_adaptive_first_steps', 10), getattr(args, 'teacache_adaptive_last_steps', 16),
+                         args.teacache_thresh, args.teacache_thresh_high)
         if args.use_ret_steps:
             if '1.3B' in args.ckpt_dir:
                 wan_t2v.model.__class__.coefficients = [-5.21862437e+04, 9.23041404e+03, -5.28275948e+02, 1.36987616e+01, -4.99875664e-02]
@@ -1016,6 +1052,9 @@ def generate(args):
         wan_i2v.model.__class__.cnt = 0
         wan_i2v.model.__class__.num_steps = args.sample_steps*2
         wan_i2v.model.__class__.teacache_thresh = args.teacache_thresh
+        wan_i2v.model.__class__.teacache_thresh_high = getattr(args, 'teacache_thresh_high', None)
+        wan_i2v.model.__class__.adaptive_first_steps = getattr(args, 'teacache_adaptive_first_steps', 10)
+        wan_i2v.model.__class__.adaptive_last_steps = getattr(args, 'teacache_adaptive_last_steps', 10)
         wan_i2v.model.__class__.accumulated_rel_l1_distance_even = 0
         wan_i2v.model.__class__.accumulated_rel_l1_distance_odd = 0
         wan_i2v.model.__class__.previous_e0_even = None
@@ -1026,6 +1065,10 @@ def generate(args):
         if args.teacache_thresh == 0:
             wan_i2v.model.delta_TEMNI = []
             logging.info("TeaCache threshold=0: no caching; delta TEMNI will be recorded and plotted.")
+        if getattr(args, 'teacache_thresh_high', None) is not None:
+            logging.info("TeaCache adaptive: first %d and last %d steps = thresh %.2f, middle = thresh %.2f",
+                         getattr(args, 'teacache_adaptive_first_steps', 10), getattr(args, 'teacache_adaptive_last_steps', 16),
+                         args.teacache_thresh, args.teacache_thresh_high)
         if args.use_ret_steps:
             if '480P' in args.ckpt_dir:
                 wan_i2v.model.__class__.coefficients = [ 2.57151496e+05, -3.54229917e+04,  1.40286849e+03, -1.35890334e+01, 1.32517977e-01]
@@ -1080,9 +1123,9 @@ def generate(args):
                 nrow=1,
                 normalize=True,
                 value_range=(-1, 1))
-        # Plot delta TEMNI when recorded (e.g. --teacache_thresh 0)
+        # Plot delta TEMNI when recorded (e.g. --teacache_thresh 0), unless disabled
         gen_model = getattr(args, '_generation_model', None)
-        if gen_model is not None:
+        if gen_model is not None and not getattr(args, 'no_delta_temni_plot', False):
             _plot_delta_temni(gen_model, args.save_file, logging)
     logging.info("Finished.")    
     
