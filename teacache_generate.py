@@ -23,15 +23,16 @@ import torchvision.transforms.functional as TF
 import torch.cuda.amp as amp
 import numpy as np
 import math
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from wan.modules.model import sinusoidal_embedding_1d
 from wan.utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                get_sampling_sigmas, retrieve_timesteps)
 from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 
 
-which_gpu = 0
 EXAMPLE_PROMPT = {
     "t2v-1.3B": {
         "prompt": "Two anthropomorphic cats in comfy boxing gear and bright gloves fight intensely on a spotlighted stage.",
@@ -96,14 +97,6 @@ def t2v_generate(self,
                 - W: Frame width from size)
         """
         # preprocess
-        timings = {
-            "t5_encoder": 0.0,
-            "clip_encoder": 0.0,                 # Only for i2v
-            "wan_model_conditional": 0.0,
-            "wan_model_unconditional": 0.0,
-            "vae_decode": 0.0
-        }
-
         F = frame_num
         target_shape = (self.vae.model.z_dim, (F - 1) // self.vae_stride[0] + 1,
                         size[1] // self.vae_stride[1],
@@ -119,11 +112,6 @@ def t2v_generate(self,
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
 
-
-        start_t5 = torch.cuda.Event(enable_timing=True)
-        end_t5 = torch.cuda.Event(enable_timing=True)
-        start_t5.record()
-
         if not self.t5_cpu:
             self.text_encoder.model.to(self.device)
             context = self.text_encoder([input_prompt], self.device)
@@ -135,12 +123,6 @@ def t2v_generate(self,
             context_null = self.text_encoder([n_prompt], torch.device('cpu'))
             context = [t.to(self.device) for t in context]
             context_null = [t.to(self.device) for t in context_null]
-
-
-        end_t5.record()
-        torch.cuda.synchronize()
-        timings["t5_encoder"] = start_t5.elapsed_time(end_t5)
-
 
         noise = [
             torch.randn(
@@ -196,25 +178,10 @@ def t2v_generate(self,
                 timestep = torch.stack(timestep)
 
                 self.model.to(self.device)
-
-                start_cond = torch.cuda.Event(enable_timing=True)
-                end_cond = torch.cuda.Event(enable_timing=True)
-                start_cond.record()
                 noise_pred_cond = self.model(
                     latent_model_input, t=timestep, **arg_c)[0]
-                end_cond.record()
-                torch.cuda.synchronize()
-                timings["wan_model_conditional"] += start_cond.elapsed_time(end_cond)
-
-                start_uncond = torch.cuda.Event(enable_timing=True)
-                end_uncond = torch.cuda.Event(enable_timing=True)
-                start_uncond.record()
                 noise_pred_uncond = self.model(
                     latent_model_input, t=timestep, **arg_null)[0]
-                end_uncond.record()
-                torch.cuda.synchronize()
-                timings["wan_model_unconditional"] += start_uncond.elapsed_time(end_uncond)
-
 
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
@@ -231,15 +198,8 @@ def t2v_generate(self,
             if offload_model:
                 self.model.cpu()
                 torch.cuda.empty_cache()
-            if self.rank == which_gpu:
-                start_vae = torch.cuda.Event(enable_timing=True)
-                end_vae = torch.cuda.Event(enable_timing=True)
-                start_vae.record()
+            if self.rank == 0:
                 videos = self.vae.decode(x0)
-                end_vae.record()
-                torch.cuda.synchronize()
-                timings["vae_decode"] = start_vae.elapsed_time(end_vae)
-
 
         del noise, latents
         del sample_scheduler
@@ -248,20 +208,6 @@ def t2v_generate(self,
             torch.cuda.synchronize()
         if dist.is_initialized():
             dist.barrier()
-
-        if (self.rank == which_gpu):
-            print("\n===== Model Timing Summary =====")
-            print(f"T5 Text Encoder: {timings['t5_encoder']:.2f} ms")
-            if "clip_encoder" in timings:
-                print(f"CLIP/Image Encoder: {timings['clip_encoder']:.2f} ms")
-            print(f"WanModel (Conditional): {timings['wan_model_conditional']:.2f} ms")
-            print(f"WanModel (Unconditional): {timings['wan_model_unconditional']:.2f} ms")
-            total_model_time = timings['wan_model_conditional'] + timings['wan_model_unconditional']
-            print(f"WanModel Total: {total_model_time:.2f} ms")
-            print(f"Average time per diffusion step: {total_model_time/len(timesteps):.2f} ms")
-            print(f"VAE Decoding: {timings['vae_decode']:.2f} ms")
-            print(f"Total model time: {timings['t5_encoder'] + total_model_time + timings['vae_decode']:.2f} ms")
-            print("==============================\n")
 
         return videos[0] if self.rank == 0 else None
 
@@ -575,25 +521,27 @@ def teacache_forward(
         
     if self.enable_teacache:
         modulated_inp = e0 if self.use_ref_steps else e
-
-
-        # Initialize metric tracking if not exists
-        if not hasattr(self, 'metric_history'):
-            self.metric_history = {
-                'even_accumulated': [],
-                'odd_accumulated': [], 
-                'even_timesteps': [],
-                'odd_timesteps': []
-            }
+        # Record delta TEMNI for plotting when list is present (e.g. --teacache_thresh 0)
+        delta_temni_list = getattr(self, 'delta_TEMNI', None)
+        no_cache_mode = (self.teacache_thresh == 0)
+        rescale_func = np.poly1d(self.coefficients) if getattr(self, 'coefficients', None) is not None else None
 
         # teacache
         if self.cnt%2==0: # even -> conditon
             self.is_even = True
-            if self.cnt < self.ret_steps or self.cnt >= self.cutoff_steps:
+            if delta_temni_list is not None:
+                if self.previous_e0_even is not None:
+                    raw_delta = ((modulated_inp - self.previous_e0_even).abs().mean() / self.previous_e0_even.abs().mean()).cpu().item()
+                    delta_val = float(rescale_func(raw_delta)) if rescale_func is not None else raw_delta
+                    delta_temni_list.append(delta_val)
+                else:
+                    delta_temni_list.append(0.0)
+            if no_cache_mode:
+                should_calc_even = True
+            elif self.cnt < self.ret_steps or self.cnt >= self.cutoff_steps:
                     should_calc_even = True
                     self.accumulated_rel_l1_distance_even = 0
             else:
-                rescale_func = np.poly1d(self.coefficients)
                 self.accumulated_rel_l1_distance_even += rescale_func(((modulated_inp-self.previous_e0_even).abs().mean() / self.previous_e0_even.abs().mean()).cpu().item())
                 if self.accumulated_rel_l1_distance_even < self.teacache_thresh:
                     should_calc_even = False
@@ -602,24 +550,21 @@ def teacache_forward(
                     self.accumulated_rel_l1_distance_even = 0
             self.previous_e0_even = modulated_inp.clone()
 
-            # should_calc_even = True
-            # # Only calculate if we have a previous value (skip first step)
-            # if hasattr(self, 'previous_e0_even') and self.previous_e0_even is not None:
-            #     rescale_func = np.poly1d(self.coefficients)
-            #     self.accumulated_rel_l1_distance_even += rescale_func(((modulated_inp-self.previous_e0_even).abs().mean() / self.previous_e0_even.abs().mean()).cpu().item())
-                
-            #     # Store the accumulated metric and step number
-            #     self.metric_history["even_accumulated"].append(self.accumulated_rel_l1_distance_even)
-            #     self.metric_history["even_timesteps"].append(self.cnt)
-            
-            # self.previous_e0_even = modulated_inp.clone()
-
         else: # odd -> unconditon
             self.is_even = False
-            if self.cnt < self.ret_steps or self.cnt >= self.cutoff_steps:
+            if delta_temni_list is not None:
+                if self.previous_e0_odd is not None:
+                    raw_delta = ((modulated_inp - self.previous_e0_odd).abs().mean() / self.previous_e0_odd.abs().mean()).cpu().item()
+                    delta_val = float(rescale_func(raw_delta)) if rescale_func is not None else raw_delta
+                    delta_temni_list.append(delta_val)
+                else:
+                    delta_temni_list.append(0.0)
+            if no_cache_mode:
+                should_calc_odd = True
+            elif self.cnt < self.ret_steps or self.cnt >= self.cutoff_steps:
                     should_calc_odd = True
                     self.accumulated_rel_l1_distance_odd = 0
-            else: 
+            else:
                 rescale_func = np.poly1d(self.coefficients)
                 self.accumulated_rel_l1_distance_odd += rescale_func(((modulated_inp-self.previous_e0_odd).abs().mean() / self.previous_e0_odd.abs().mean()).cpu().item())
                 if self.accumulated_rel_l1_distance_odd < self.teacache_thresh:
@@ -628,19 +573,6 @@ def teacache_forward(
                     should_calc_odd = True
                     self.accumulated_rel_l1_distance_odd = 0
             self.previous_e0_odd = modulated_inp.clone()
-
-
-            # should_calc_odd = True
-            # # Only calculate if we have a previous value (skip first step) 
-            # if hasattr(self, 'previous_e0_odd') and self.previous_e0_odd is not None:
-            #     rescale_func = np.poly1d(self.coefficients)
-            #     self.accumulated_rel_l1_distance_odd += rescale_func(((modulated_inp-self.previous_e0_odd).abs().mean() / self.previous_e0_odd.abs().mean()).cpu().item())
-                
-            #     # Store the accumulated metric and step number - FIXED THE BUG HERE
-            #     self.metric_history["odd_accumulated"].append(self.accumulated_rel_l1_distance_odd)
-            #     self.metric_history["odd_timesteps"].append(self.cnt)
-            
-            # self.previous_e0_odd = modulated_inp.clone()
 
     if self.enable_teacache: 
         if self.is_even:
@@ -703,6 +635,38 @@ def _validate_args(args):
     assert args.size in SUPPORTED_SIZES[
         args.
         task], f"Unsupport size {args.size} for task {args.task}, supported sizes are: {', '.join(SUPPORTED_SIZES[args.task])}"
+
+
+def _plot_delta_temni(model, save_file, log):
+    """Plot and save delta TEMNI when recorded (e.g. --teacache_thresh 0)."""
+    delta_temni = getattr(model, 'delta_TEMNI', None)
+    if not delta_temni or len(delta_temni) == 0:
+        return
+    out_dir = os.path.dirname(os.path.abspath(save_file))
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    base = os.path.splitext(os.path.basename(save_file))[0]
+    # Delta TEMNI plot
+    plt.figure(figsize=(10, 6))
+    x = range(1, len(delta_temni) + 1)
+    plt.plot(x, delta_temni, 'g-', linewidth=2, marker='s', markersize=4)
+    plt.xlabel('Forward step (cond/uncond pair per solver step)')
+    plt.ylabel('Delta TEMNI (rescaled relative L1)')
+    plt.title('Delta TEMNI over steps (no TeaCache)')
+    plt.grid(True, alpha=0.3)
+    ax = plt.gca()
+    step = max(1, len(delta_temni) // 20)
+    ax.xaxis.set_major_locator(plt.MultipleLocator(step))
+    plot_path = os.path.join(out_dir, f'{base}_delta_TEMNI_plot.png') if base else os.path.join(out_dir or '.', 'delta_TEMNI_plot.png')
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    log.info(f'Delta TEMNI plot saved to: {plot_path}')
+    # Save raw values
+    txt_path = os.path.join(out_dir, f'{base}_delta_TEMNI.txt') if base else os.path.join(out_dir or '.', 'delta_TEMNI.txt')
+    with open(txt_path, 'w') as f:
+        for v in delta_temni:
+            f.write(f'{v}\n')
+    log.info(f'Delta TEMNI values saved to: {txt_path}')
 
 
 def _parse_args():
@@ -828,7 +792,7 @@ def _parse_args():
         "--teacache_thresh",
         type=float,
         default=0.2,
-        help="Higher speedup will cause to worse quality -- 0.1 for 2.0x speedup -- 0.2 for 3.0x speedup")
+        help="TeaCache threshold. 0 = no caching (baseline), but still record and plot delta TEMNI. 0.1 for ~2x speedup, 0.2 for ~3x speedup.")
     parser.add_argument(
         "--use_ret_steps",
         action="store_true",
@@ -853,71 +817,6 @@ def _init_logging(rank):
             handlers=[logging.StreamHandler(stream=sys.stdout)])
     else:
         logging.basicConfig(level=logging.ERROR)
-
-def plot_accumulated_distances_separate(model, prompt, save_path=None):
-    """
-    Plot the accumulated relative L1 distances for conditional and unconditional paths separately
-    """
-    if not hasattr(model, 'metric_history'):
-        print("No metric history found. Make sure TeaCache was enabled during generation.")
-        return
-    
-    history = model.metric_history
-    
-    # Create separate plots for conditional and unconditional
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
-    # Plot 1: Conditional (Even) steps
-    if history['even_accumulated']:
-        ax1.plot(history['even_timesteps'], history['even_accumulated'], 'b-o', markersize=4, linewidth=2)
-        ax1.set_xlabel('Step Number (cnt)')
-        ax1.set_ylabel('Accumulated Relative L1 Distance')
-        ax1.set_title('Conditional Path (Even Steps)')
-        ax1.grid(True, alpha=0.3)
-        ax1.set_xlim(0, max(history['even_timesteps']) if history['even_timesteps'] else 1)
-        
-        # Add threshold line if it exists
-        if hasattr(model, 'teacache_thresh'):
-            ax1.axhline(y=model.teacache_thresh, color='r', linestyle='--', alpha=0.7, 
-                       label=f'Cache Threshold ({model.teacache_thresh})')
-            ax1.legend()
-    
-    # Plot 2: Unconditional (Odd) steps  
-    if history['odd_accumulated']:
-        ax2.plot(history['odd_timesteps'], history['odd_accumulated'], 'r-s', markersize=4, linewidth=2)
-        ax2.set_xlabel('Step Number (cnt)')
-        ax2.set_ylabel('Accumulated Relative L1 Distance')
-        ax2.set_title('Unconditional Path (Odd Steps)')
-        ax2.grid(True, alpha=0.3)
-        ax2.set_xlim(0, max(history['odd_timesteps']) if history['odd_timesteps'] else 1)
-        
-        # Add threshold line if it exists
-        if hasattr(model, 'teacache_thresh'):
-            ax2.axhline(y=model.teacache_thresh, color='r', linestyle='--', alpha=0.7,
-                       label=f'Cache Threshold ({model.teacache_thresh})')
-            ax2.legend()
-    
-    plt.suptitle(f'TeaCache Accumulated Metrics - Separate Paths\nPrompt: "{prompt[:50]}..."', fontsize=14)
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Plot saved to {save_path}")
-    else:
-        plt.show()
-    
-    # Print summary statistics
-    print(f"\n=== Accumulated Distance Summary ===")
-    if history['even_accumulated']:
-        print(f"Conditional path - Final accumulated distance: {history['even_accumulated'][-1]:.4f}")
-        print(f"Conditional path - Max accumulated distance: {max(history['even_accumulated']):.4f}")
-        print(f"Conditional path - Steps recorded: {len(history['even_accumulated'])}")
-    
-    if history['odd_accumulated']:
-        print(f"Unconditional path - Final accumulated distance: {history['odd_accumulated'][-1]:.4f}")
-        print(f"Unconditional path - Max accumulated distance: {max(history['odd_accumulated']):.4f}")
-        print(f"Unconditional path - Steps recorded: {len(history['odd_accumulated'])}")
-    print("=====================================\n")
 
 
 def generate(args):
@@ -1036,6 +935,9 @@ def generate(args):
         wan_t2v.model.__class__.previous_residual_even = None
         wan_t2v.model.__class__.previous_residual_odd = None
         wan_t2v.model.__class__.use_ref_steps = args.use_ret_steps
+        if args.teacache_thresh == 0:
+            wan_t2v.model.delta_TEMNI = []
+            logging.info("TeaCache threshold=0: no caching; delta TEMNI will be recorded and plotted.")
         if args.use_ret_steps:
             if '1.3B' in args.ckpt_dir:
                 wan_t2v.model.__class__.coefficients = [-5.21862437e+04, 9.23041404e+03, -5.28275948e+02, 1.36987616e+01, -4.99875664e-02]
@@ -1062,6 +964,7 @@ def generate(args):
             guide_scale=args.sample_guide_scale,
             seed=args.base_seed,
             offload_model=args.offload_model)
+        args._generation_model = wan_t2v.model
 
     else:
         if args.prompt is None:
@@ -1120,6 +1023,9 @@ def generate(args):
         wan_i2v.model.__class__.previous_residual_even = None
         wan_i2v.model.__class__.previous_residual_odd = None
         wan_i2v.model.__class__.use_ref_steps = args.use_ret_steps
+        if args.teacache_thresh == 0:
+            wan_i2v.model.delta_TEMNI = []
+            logging.info("TeaCache threshold=0: no caching; delta TEMNI will be recorded and plotted.")
         if args.use_ret_steps:
             if '480P' in args.ckpt_dir:
                 wan_i2v.model.__class__.coefficients = [ 2.57151496e+05, -3.54229917e+04,  1.40286849e+03, -1.35890334e+01, 1.32517977e-01]
@@ -1147,6 +1053,7 @@ def generate(args):
             guide_scale=args.sample_guide_scale,
             seed=args.base_seed,
             offload_model=args.offload_model)
+        args._generation_model = wan_i2v.model
 
     if rank == 0:
         if args.save_file is None:
@@ -1173,12 +1080,10 @@ def generate(args):
                 nrow=1,
                 normalize=True,
                 value_range=(-1, 1))
-
-    if rank == 0 and hasattr(wan_t2v.model if 't2v' in args.task else wan_i2v.model, 'metric_history'):
-        model = wan_t2v.model if 't2v' in args.task else wan_i2v.model
-        plot_filename = f"accumulated_distances_{args.task}_{args.prompt.replace(' ', '_')[:20]}.png"
-        plot_accumulated_distances_separate(model, args.prompt, plot_filename)
-
+        # Plot delta TEMNI when recorded (e.g. --teacache_thresh 0)
+        gen_model = getattr(args, '_generation_model', None)
+        if gen_model is not None:
+            _plot_delta_temni(gen_model, args.save_file, logging)
     logging.info("Finished.")    
     
     
