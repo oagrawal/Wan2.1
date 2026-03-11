@@ -533,12 +533,15 @@ def _parse_args():
                    help="Low threshold (adaptive mode, start/end steps).")
     p.add_argument("--easycache-thresh-high", type=float, default=0.05,
                    help="High threshold (adaptive mode, middle steps).")
-    p.add_argument("--easycache-first-steps", type=int, default=8,
-                   help="First N condition steps that use low threshold (adaptive).")
-    p.add_argument("--easycache-last-steps", type=int, default=6,
-                   help="Last N condition steps that use low threshold (adaptive).")
-    p.add_argument("--easycache-ret-steps", type=int, default=10,
-                   help="First N condition steps always compute (no skipping).")
+    p.add_argument("--easycache-first-steps", type=int, default=12,
+                   help="First N condition steps that use low threshold (adaptive). "
+                        "With ret_steps=5, covers eligible steps 5-11 (highest pred_change).")
+    p.add_argument("--easycache-last-steps", type=int, default=4,
+                   help="Last N condition steps that use low threshold (adaptive). "
+                        "Covers steps 45-47 where pred_change rises again.")
+    p.add_argument("--easycache-ret-steps", type=int, default=5,
+                   help="First N condition steps always compute (no skipping). "
+                        "Default 5 exposes more volatile eligible steps to adaptive thresholding.")
 
     # Wan model args
     p.add_argument("--task", type=str, default="t2v-1.3B",

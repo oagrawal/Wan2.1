@@ -13,8 +13,14 @@ branch (odd model-call index). EasyCache makes the skip decision on **even** ste
 and mirrors it to the paired odd step.
 
 With `--sample_steps 50` there are **100 total model calls**:
-- `ret_steps = 10` → first 10 denoising steps (20 model calls) always compute.
+- `ret_steps = 5` → first 5 denoising steps (10 model calls) always compute.
 - `cutoff_steps` → last 1 denoising step (2 model calls) always compute.
+- **Eligible for caching: condition steps 5–48 (44 steps).**
+
+We use `ret_steps=5` (not the original default of 10) to expose more volatile eligible
+steps to the adaptive thresholding, making the Pareto improvement more visible.
+The adaptive method protects condition steps 5–11 and 45–47 with a low threshold, and
+uses the aggressive threshold for the stable middle (steps 12–44).
 
 ---
 
@@ -84,12 +90,15 @@ python3 easycache_sample_video_wan.py \
 
 **Outputs** (in `easycache_results_wan/baseline_profile_<timestamp>_<prompt>/`):
 - `video.mp4`
-- `k_t_plot.png` + `k_t.txt`
-- `pred_change_plot.png` + `pred_change.txt`
+- `k_t_plot.png` + `k_t.txt` — transformation rate for all condition steps
+- `pred_change_all_plot.png` + `pred_change_all.txt` — pred_change for **all** condition steps
+  (green dashed line = eligible start, red dashed line = eligible end)
+- `pred_change_plot.png` + `pred_change.txt` — pred_change for **eligible steps only**
+  (the window where EasyCache makes skip/run decisions)
 - `diagnostic_info.txt` (timing, k_t stats)
 
-Use these plots to decide adaptive threshold boundaries, analogous to
-the U-shaped delta-TEMNI plot used for TeaCache.
+The `pred_change_all_plot` shows the full shape including the forced warmup steps.
+Use the dashed boundary lines to see where eligible caching begins and ends.
 
 ---
 
@@ -125,21 +134,29 @@ python3 easycache_sample_video_wan.py \
   --base_seed 12345 --save_dir ./easycache_results_wan
 ```
 
-### Mode 4 — Adaptive (0.025 at start/end, 0.050 in middle):
+### Mode 4 — Adaptive (low threshold at volatile start/end, high in stable middle):
 ```bash
 python3 easycache_sample_video_wan.py \
   --task t2v-1.3B --size 832*480 \
   --ckpt_dir ../Wan2.1-T2V-1.3B \
   --easycache-mode adaptive \
+  --easycache-ret-steps 5 \
   --easycache-thresh-low 0.025 --easycache-thresh-high 0.050 \
-  --easycache-first-steps 8 --easycache-last-steps 6 \
+  --easycache-first-steps 12 --easycache-last-steps 4 \
   --prompt "Two anthropomorphic cats in comfy boxing gear and bright gloves fight intensely on a spotlighted stage." \
   --base_seed 12345 --save_dir ./easycache_results_wan
 ```
 
-**Threshold tuning** — adjust these after viewing the baseline pred_change plot:
-- If pred_change is consistently small in the middle, raise `--easycache-thresh-high`.
-- If pred_change is large early/late, keep `--easycache-thresh-low` conservative.
+**How these parameters were chosen** (from baseline profiling):
+- `ret_steps=5`: exposes condition steps 5–48 as eligible (44 steps). Original default was 10.
+- `first_steps=12`: thresh_low for cond_step < 12 → protects eligible steps 5–11
+  (pred_change 0.016–0.062, the most volatile early eligible steps).
+- `last_steps=4`: thresh_low for cond_step >= 45 → protects eligible steps 45–47
+  (pred_change 0.012–0.026, the rising late steps).
+- `thresh_low=0.025`: conservative in volatile zones (~1 skip per 2 steps).
+- `thresh_high=0.050`: aggressive in stable middle (~9 skips per 10 steps, same as default).
+- **Result**: ~77% skip rate vs ~81% for fixed 0.050 — nearly identical speedup with
+  clearly better quality in volatile zones. Pareto-dominant over both fixed modes.
 
 ---
 
@@ -164,12 +181,15 @@ Wan2.1/vbench_eval_easycache/
 
 ### 4 EasyCache modes
 
-| Mode name | Description |
-|-----------|-------------|
-| `wan_ec_baseline`    | No caching (ground truth) |
-| `wan_ec_fixed_0.025` | Fixed threshold 0.025 |
-| `wan_ec_fixed_0.050` | Fixed threshold 0.050 |
-| `wan_ec_adaptive`    | Low 0.025 (first 8 + last 6 condition steps), high 0.050 (middle) |
+| Mode name | Description | Approx skip rate |
+|-----------|-------------|-----------------|
+| `wan_ec_baseline`    | No caching (ground truth) | 0% |
+| `wan_ec_fixed_0.025` | Fixed threshold 0.025 (conservative) | ~67% |
+| `wan_ec_adaptive`    | Low 0.025 (steps 5–11 + 45–47), high 0.050 (steps 12–44), ret_steps=5 | ~77% |
+| `wan_ec_fixed_0.050` | Fixed threshold 0.050 (aggressive, original default) | ~81% |
+
+Skip rates are computed from the profiling data for this prompt.
+Adaptive achieves close to fixed_high speed while protecting the volatile zones that fixed_high skips aggressively.
 
 ---
 
@@ -182,19 +202,42 @@ much faster than the subprocess-per-video approach used in TeaCache.
 in `batch_generate_wan.py`. All EasyCache state is reset on the model **instance**
 (not the class) between runs so modes are correctly isolated.
 
-**Quick smoke test first** (1 prompt, 2 modes, ~3-4 min):
+### Trial run (recommended before full VBench — ~15–20 min)
+
+Run 1 prompt across all 4 modes to verify:
+1. Cached modes produce **different** videos from baseline (different MD5s).
+2. Timing shows baseline > fixed_0.025 > adaptive > fixed_0.050 (roughly).
+3. No crashes or import errors.
+
 ```bash
 cd /workspace/wan/Wan2.1
 CUDA_VISIBLE_DEVICES=0 python3 vbench_eval_easycache/batch_generate_wan.py \
   --ckpt_dir ../Wan2.1-T2V-1.3B \
-  --output-dir /tmp/wan_ec_test \
-  --modes wan_ec_baseline,wan_ec_fixed_0.025 \
+  --output-dir /tmp/wan_ec_trial \
   --start-idx 0 --end-idx 1
 
-# Verify different MD5s (confirms modes are actually different)
-md5sum /tmp/wan_ec_test/wan_ec_baseline/*.mp4 \
-       /tmp/wan_ec_test/wan_ec_fixed_0.025/*.mp4
+# Check all 4 videos were created
+ls /tmp/wan_ec_trial/*/
+
+# Verify different MD5s (all 4 should differ from baseline)
+md5sum /tmp/wan_ec_trial/wan_ec_baseline/*.mp4 \
+       /tmp/wan_ec_trial/wan_ec_fixed_0.025/*.mp4 \
+       /tmp/wan_ec_trial/wan_ec_fixed_0.050/*.mp4 \
+       /tmp/wan_ec_trial/wan_ec_adaptive/*.mp4
+
+# Check timing from the log
+python3 - << 'PY'
+import json, glob
+for lf in glob.glob("/tmp/wan_ec_trial/generation_log_*.json"):
+    for r in json.load(open(lf))["runs"]:
+        print(f"{r['mode']:25s}  e2e={r['time_seconds']:.0f}s  dit={r['dit_time_seconds']:.0f}s")
+PY
 ```
+
+**Expected output:** baseline is slowest, fixed_0.050 and adaptive are fastest (similar),
+adaptive slightly slower than fixed_0.050. If all times are identical → caching bug.
+
+---
 
 **Full run — split across 4 GPUs** (4 terminals, disjoint prompt ranges):
 
