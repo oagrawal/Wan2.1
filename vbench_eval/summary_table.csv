@@ -1,0 +1,5 @@
+Mode,Speedup,Latency (s),VBench Total,PSNR,SSIM,LPIPS
+Wan 2.1 (no cache),1.00x,297s,82.43%,—,—,—
+TeaCache 0.1,1.53x,193s,82.37%,19.8514,0.6796,0.1945
+TeaCache 0.2,1.93x,153s,81.90%,17.1011,0.5341,0.3371
+TeaCache Adaptive,1.75x,169s,82.17%,18.3045,0.5952,0.2738

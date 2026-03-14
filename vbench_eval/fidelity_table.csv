@@ -1,0 +1,5 @@
+Mode,PSNR,SSIM,LPIPS,Latency
+Wan 2.1 (no cache),—,—,—,297s
+TeaCache 0.1,19.8514,0.6796,0.1945,193s
+TeaCache 0.2,17.1011,0.5341,0.3371,153s
+TeaCache Adaptive,18.3045,0.5952,0.2738,169s

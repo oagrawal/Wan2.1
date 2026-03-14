@@ -1,0 +1,5 @@
+mode,speedup,latency,vbench,psnr,ssim,lpips
+Wan baseline,1.00x,216s,77.58%,—,—,—
+Wan EasyCache 0.020,1.73x,125s,77.65%,25.58,0.8516,0.0869
+Wan EasyCache 0.040,2.12x,102s,77.80%,22.02,0.7500,0.1485
+Wan EasyCache adaptive 16 (0.02/0.04),1.92x,113s,77.54%,24.90,0.8329,0.0996

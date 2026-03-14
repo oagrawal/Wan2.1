@@ -204,33 +204,82 @@ in `batch_generate_wan.py`. All EasyCache state is reset on the model **instance
 
 ### Trial run (recommended before full VBench — ~15–20 min)
 
-Run 1 prompt across all 4 modes to verify:
+Use **20 sampling steps** and **split 4 prompts across 4 GPUs** to quickly check:
 1. Cached modes produce **different** videos from baseline (different MD5s).
 2. Timing shows baseline > fixed_0.025 > adaptive > fixed_0.050 (roughly).
 3. No crashes or import errors.
 
 ```bash
 cd /workspace/wan/Wan2.1
+
+# GPU 0 — prompt 0
 CUDA_VISIBLE_DEVICES=0 python3 vbench_eval_easycache/batch_generate_wan.py \
   --ckpt_dir ../Wan2.1-T2V-1.3B \
   --output-dir /tmp/wan_ec_trial \
-  --start-idx 0 --end-idx 1
+  --start-idx 0 --end-idx 1 \
+  --sample-steps 20 &
 
-# Check all 4 videos were created
+# GPU 1 — prompt 1
+CUDA_VISIBLE_DEVICES=1 python3 vbench_eval_easycache/batch_generate_wan.py \
+  --ckpt_dir ../Wan2.1-T2V-1.3B \
+  --output-dir /tmp/wan_ec_trial \
+  --start-idx 1 --end-idx 2 \
+  --sample-steps 20 &
+
+# GPU 2 — prompt 2
+CUDA_VISIBLE_DEVICES=2 python3 vbench_eval_easycache/batch_generate_wan.py \
+  --ckpt_dir ../Wan2.1-T2V-1.3B \
+  --output-dir /tmp/wan_ec_trial \
+  --start-idx 2 --end-idx 3 \
+  --sample-steps 20 &
+
+# GPU 3 — prompt 3
+CUDA_VISIBLE_DEVICES=3 python3 vbench_eval_easycache/batch_generate_wan.py \
+  --ckpt_dir ../Wan2.1-T2V-1.3B \
+  --output-dir /tmp/wan_ec_trial \
+  --start-idx 3 --end-idx 4 \
+  --sample-steps 20 &
+
+wait
+
+# Check all 4 modes were created for at least one prompt
 ls /tmp/wan_ec_trial/*/
 
-# Verify different MD5s (all 4 should differ from baseline)
+# Verify different MD5s (all 4 should differ from baseline for a given prompt)
 md5sum /tmp/wan_ec_trial/wan_ec_baseline/*.mp4 \
        /tmp/wan_ec_trial/wan_ec_fixed_0.025/*.mp4 \
        /tmp/wan_ec_trial/wan_ec_fixed_0.050/*.mp4 \
        /tmp/wan_ec_trial/wan_ec_adaptive/*.mp4
 
-# Check timing from the log
+# Check aggregated timing and speedups
 python3 - << 'PY'
-import json, glob
+import json, glob, statistics as stats
+
+by_mode = {}
 for lf in glob.glob("/tmp/wan_ec_trial/generation_log_*.json"):
-    for r in json.load(open(lf))["runs"]:
-        print(f"{r['mode']:25s}  e2e={r['time_seconds']:.0f}s  dit={r['dit_time_seconds']:.0f}s")
+    data = json.load(open(lf))
+    for r in data.get("runs", []):
+        if "time_seconds" not in r or "dit_time_seconds" not in r:
+            continue
+        by_mode.setdefault(r["mode"], []).append(
+            (r["time_seconds"], r["dit_time_seconds"])
+        )
+
+baseline = by_mode.get("wan_ec_baseline", [])
+base_mean = stats.mean(t for t, _ in baseline) if baseline else None
+
+print("Mode                        N   e2e_mean(s)  DiT_mean(s)  speedup_vs_baseline")
+print("-" * 78)
+for mode, times in sorted(by_mode.items()):
+    e2e = [t for t, _ in times]
+    dit = [d for _, d in times]
+    e2e_mean = stats.mean(e2e)
+    dit_mean = stats.mean(dit)
+    if base_mean and mode != "wan_ec_baseline":
+        speedup = base_mean / e2e_mean
+    else:
+        speedup = 1.0
+    print(f"{mode:25s} {len(times):3d}   {e2e_mean:10.1f}   {dit_mean:10.1f}   {speedup:7.2f}x")
 PY
 ```
 
