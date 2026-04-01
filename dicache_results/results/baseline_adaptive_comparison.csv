@@ -1,0 +1,4 @@
+mode,speedup,latency,vbench,psnr,ssim,lpips
+wan_dc_baseline,1.00x,226s,83.0562%,—,—,—
+wan_dc_adaptive_0.20_0.30,4.10x,55s,71.2860%,—,—,—
+wan_dc_adaptive_0.10_0.30,2.89x,78s,67.8160%,—,—,—

@@ -4,5 +4,19 @@ Wan EasyCache 0.020,1.73x,125s,77.65%,25.58,0.8516,0.0869
 Wan EasyCache 0.025,1.86x,117s,77.60%,24.42,0.8221,0.1051
 Wan EasyCache 0.040,2.12x,102s,77.80%,22.02,0.7500,0.1485
 Wan EasyCache 0.050,2.28x,95s,77.81%,21.16,0.7090,0.1734
+Wan EasyCache 0.060,2.40x,90s,77.91%,—,—,—
+Wan EasyCache 0.070,2.49x,87s,77.78%,—,—,—
+Wan EasyCache 0.080,2.57x,84s,77.76%,—,—,—
+Wan EasyCache 0.090,2.62x,83s,77.79%,—,—,—
+Wan EasyCache 0.125,2.89x,75s,77.79%,—,—,—
+Wan EasyCache 0.150,2.98x,73s,77.48%,—,—,—
+Wan EasyCache 0.175,3.09x,70s,77.55%,—,—,—
+Wan EasyCache 0.200,3.15x,69s,75.62%,18.45,0.5685,0.2933
+Wan EasyCache 0.225,3.25x,67s,75.39%,—,—,—
+Wan EasyCache 0.250,3.28x,66s,77.33%,—,—,—
 Wan EasyCache adaptive,2.10x,103s,77.46%,23.62,0.7950,0.1234
 Wan EasyCache adaptive 16 (0.02/0.04),1.92x,113s,77.54%,24.90,0.8329,0.0996
+Wan EasyCache adaptive 16 (0.025/0.20),2.45x,88s,77.16%,20.80,0.6821,0.1967
+Wan EasyCache adaptive 16 (0.05/0.20),2.68x,81s,76.95%,—,—,—
+Wan EasyCache adaptive 16 (0.075/0.20),2.86x,76s,76.90%,—,—,—
+Wan EasyCache adaptive 16 (0.10/0.20),2.94x,74s,76.96%,—,—,—

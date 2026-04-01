@@ -1,7 +1,8 @@
 # Wan2.1 EasyCache — Run Instructions
 
-Run all commands from the **Wan2.1 repo root** inside the **`wan21` Docker container**.
-See `INSTRUCTIONS_WAN.md` for container setup details (same container works here).
+**One container (recommended):** Use **`hv_eval_wan`** for both video generation and VBench. No need to switch containers. See [One-container setup](#one-container-setup-hv_eval_wan) below.
+
+**Alternative:** Use **`wan21`** for generation and **`hv_eval_wan`** for VBench (two containers). See `INSTRUCTIONS_WAN.md` for `wan21` setup.
 
 ---
 
@@ -21,6 +22,53 @@ We use `ret_steps=5` (not the original default of 10) to expose more volatile el
 steps to the adaptive thresholding, making the Pareto improvement more visible.
 The adaptive method protects condition steps 5–11 and 45–47 with a low threshold, and
 uses the aggressive threshold for the stable middle (steps 12–44).
+
+---
+
+## One-container setup (hv_eval_wan)
+
+Use **`hv_eval_wan`** for both video generation and VBench evaluation. Create the container once:
+
+```bash
+docker run -it --gpus all --init --net=host --uts=host --ipc=host \
+  --name hv_eval_wan --security-opt=seccomp=unconfined \
+  --ulimit=stack=67108864 --ulimit=memlock=-1 --privileged \
+  -v /nfs/oagrawal:/nfs/oagrawal \
+  hunyuanvideo/hunyuanvideo:cuda_11 bash
+```
+
+Inside the container, install VBench prerequisites (one-time):
+```bash
+apt-get update && apt-get install -y libgl1
+pip install transformers==4.33.2
+pip install vbench
+pip install 'git+https://github.com/facebookresearch/detectron2.git'
+pip install lpips
+```
+
+**Video generation** — from Wan2.1 root:
+```bash
+cd /nfs/oagrawal/wan/Wan2.1
+
+python3 vbench_eval_easycache/batch_generate_wan.py \
+  --ckpt_dir /nfs/oagrawal/wan/Wan2.1-T2V-1.3B \
+  --modes wan_ec_baseline,wan_ec_fixed_0.050 \
+  --start-idx 0 --end-idx 33
+```
+
+Use `--ckpt_dir /nfs/oagrawal/wan/Wan2.1-T2V-1.3B` (absolute path). Split across GPUs with different `--start-idx` / `--end-idx` in separate terminals.
+
+**VBench evaluation** — set paths then run:
+```bash
+HV_ROOT=/nfs/oagrawal/HunyuanVideo
+WAN_EC=/nfs/oagrawal/wan/Wan2.1/vbench_eval_easycache
+
+CUDA_VISIBLE_DEVICES=0 python3 $HV_ROOT/vbench_eval_easycache/run_vbench_eval.py \
+  --video-dir $WAN_EC/videos --save-dir $WAN_EC/vbench_scores \
+  --full-info $HV_ROOT/vbench_eval/prompts_subset.json --modes wan_ec_baseline
+```
+
+**Re-enter container:** `docker start -ai hv_eval_wan` (or `docker exec -it hv_eval_wan bash` if already running).
 
 ---
 
@@ -290,54 +338,50 @@ adaptive slightly slower than fixed_0.050. If all times are identical → cachin
 
 **Full run — split across 4 GPUs** (4 terminals, disjoint prompt ranges):
 
+*Using **hv_eval_wan** (one container for gen + VBench):* `docker start -ai hv_eval_wan`, then `cd /nfs/oagrawal/wan/Wan2.1` and use `--ckpt_dir /nfs/oagrawal/wan/Wan2.1-T2V-1.3B` in the commands below.
+
+*Using **wan21** (separate gen container):* `docker start -ai wan21`, then `cd /workspace/wan/Wan2.1` and use `--ckpt_dir ../Wan2.1-T2V-1.3B`.
+
 Create 4 tmux sessions:
 ```bash
 # Terminal 1
 tmux new -s wan_ec0
-docker start -ai wan21
-cd /workspace/wan/Wan2.1
+docker start -ai hv_eval_wan   # or wan21
+cd /nfs/oagrawal/wan/Wan2.1   # or /workspace/wan/Wan2.1 in wan21
 
-# Terminal 2
+# Terminals 2–4
 tmux new -s wan_ec1
-docker exec -it wan21 bash
-cd /workspace/wan/Wan2.1
-
-# Terminal 3
-tmux new -s wan_ec2
-docker exec -it wan21 bash
-cd /workspace/wan/Wan2.1
-
-# Terminal 4
-tmux new -s wan_ec3
-docker exec -it wan21 bash
-cd /workspace/wan/Wan2.1
+docker exec -it hv_eval_wan bash   # or wan21
+cd /nfs/oagrawal/wan/Wan2.1
 ```
 
 **Terminal 1 (GPU 0, prompts 0–8):**
 ```bash
+# hv_eval_wan: use --ckpt_dir /nfs/oagrawal/wan/Wan2.1-T2V-1.3B
+# wan21: use --ckpt_dir ../Wan2.1-T2V-1.3B
 CUDA_VISIBLE_DEVICES=0 python3 vbench_eval_easycache/batch_generate_wan.py \
-  --ckpt_dir ../Wan2.1-T2V-1.3B \
+  --ckpt_dir /nfs/oagrawal/wan/Wan2.1-T2V-1.3B \
   --start-idx 0 --end-idx 9
 ```
 
 **Terminal 2 (GPU 1, prompts 9–17):**
 ```bash
 CUDA_VISIBLE_DEVICES=1 python3 vbench_eval_easycache/batch_generate_wan.py \
-  --ckpt_dir ../Wan2.1-T2V-1.3B \
+  --ckpt_dir /nfs/oagrawal/wan/Wan2.1-T2V-1.3B \
   --start-idx 9 --end-idx 18
 ```
 
 **Terminal 3 (GPU 2, prompts 18–26):**
 ```bash
 CUDA_VISIBLE_DEVICES=2 python3 vbench_eval_easycache/batch_generate_wan.py \
-  --ckpt_dir ../Wan2.1-T2V-1.3B \
+  --ckpt_dir /nfs/oagrawal/wan/Wan2.1-T2V-1.3B \
   --start-idx 18 --end-idx 27
 ```
 
 **Terminal 4 (GPU 3, prompts 27–32):**
 ```bash
 CUDA_VISIBLE_DEVICES=3 python3 vbench_eval_easycache/batch_generate_wan.py \
-  --ckpt_dir ../Wan2.1-T2V-1.3B \
+  --ckpt_dir /nfs/oagrawal/wan/Wan2.1-T2V-1.3B \
   --start-idx 27 --end-idx 33
 ```
 
@@ -488,11 +532,13 @@ Outputs:
 
 | Step | Container | Command |
 |------|-----------|---------|
-| Baseline profile | `wan21` | `python3 easycache_sample_video_wan.py --easycache-mode baseline …` |
-| Batch generation | `wan21`, tmux | `batch_generate_wan.py --ckpt_dir … --start-idx … --end-idx …` |
-| VBench eval | `hunyuanvideo` / `hv_eval_wan` | `run_vbench_eval.py --video-dir $WAN_EC/videos …` |
-| Fidelity | `hunyuanvideo` / `hv_eval_wan` | `run_fidelity_metrics.py --video-dir … --baseline wan_ec_baseline …` |
+| Baseline profile | `wan21` or `hv_eval_wan` | `cd /nfs/oagrawal/wan/Wan2.1` then `python3 easycache_sample_video_wan.py …` |
+| Batch generation | `hv_eval_wan` (or `wan21`) | `cd /nfs/oagrawal/wan/Wan2.1` then `batch_generate_wan.py --ckpt_dir /nfs/oagrawal/wan/Wan2.1-T2V-1.3B …` |
+| VBench eval | `hv_eval_wan` | `run_vbench_eval.py --video-dir $WAN_EC/videos …` |
+| Fidelity | `hv_eval_wan` | `run_fidelity_metrics.py --video-dir … --baseline wan_ec_baseline …` |
 | Compare | Host or any container | `compare_results_wan.py` |
+
+**One-container workflow:** Use `hv_eval_wan` for all steps. `cd /nfs/oagrawal/wan/Wan2.1` for generation; use absolute `--ckpt_dir /nfs/oagrawal/wan/Wan2.1-T2V-1.3B`.
 
 ## Transformers versions
 
@@ -505,9 +551,9 @@ Outputs:
 ## Troubleshooting
 
 **`ModuleNotFoundError: No module named 'easycache_sample_video_wan'`**
-Run from the Wan2.1 repo root, or add it to `PYTHONPATH`:
+Run from the Wan2.1 repo root: `cd /nfs/oagrawal/wan/Wan2.1` (or `cd /workspace/wan/Wan2.1` in wan21). Or add to `PYTHONPATH`:
 ```bash
-PYTHONPATH=/workspace/wan/Wan2.1 python3 vbench_eval_easycache/batch_generate_wan.py …
+PYTHONPATH=/nfs/oagrawal/wan/Wan2.1 python3 vbench_eval_easycache/batch_generate_wan.py …
 ```
 
 **`libGL.so.1: cannot open shared object file` (dynamic_degree)**

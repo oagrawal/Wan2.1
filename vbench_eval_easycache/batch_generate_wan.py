@@ -61,6 +61,16 @@ MODES = [
     {"name": "wan_ec_fixed_0.025", "mode": "easycache", "thresh": 0.025},
     {"name": "wan_ec_fixed_0.040", "mode": "easycache", "thresh": 0.040},
     {"name": "wan_ec_fixed_0.050", "mode": "easycache", "thresh": 0.050},
+    {"name": "wan_ec_fixed_0.060", "mode": "easycache", "thresh": 0.060},
+    {"name": "wan_ec_fixed_0.070", "mode": "easycache", "thresh": 0.070},
+    {"name": "wan_ec_fixed_0.080", "mode": "easycache", "thresh": 0.080},
+    {"name": "wan_ec_fixed_0.090", "mode": "easycache", "thresh": 0.090},
+    {"name": "wan_ec_fixed_0.125", "mode": "easycache", "thresh": 0.125},
+    {"name": "wan_ec_fixed_0.150", "mode": "easycache", "thresh": 0.150},
+    {"name": "wan_ec_fixed_0.175", "mode": "easycache", "thresh": 0.175},
+    {"name": "wan_ec_fixed_0.200", "mode": "easycache", "thresh": 0.200},
+    {"name": "wan_ec_fixed_0.225", "mode": "easycache", "thresh": 0.225},
+    {"name": "wan_ec_fixed_0.250", "mode": "easycache", "thresh": 0.250},
     # Adaptive: thresh_low for volatile early (steps < first_steps) and late
     # (steps >= n_cond - last_steps - 1), thresh_high for stable middle.
     # first_steps=12, last_steps=4 with ret_steps=5 protects exactly the
@@ -73,6 +83,15 @@ MODES = [
     {"name": "wan_ec_adaptive_16_020040", "mode": "adaptive",
      "thresh_low": 0.020, "thresh_high": 0.040,
      "first_steps": 16, "last_steps": 4},
+    # Adaptive high=0.20, 4 low thresholds (first_steps=16, last_steps=4)
+    {"name": "wan_ec_adaptive_16_025_020", "mode": "adaptive",
+     "thresh_low": 0.025, "thresh_high": 0.200, "first_steps": 16, "last_steps": 4},
+    {"name": "wan_ec_adaptive_16_050_020", "mode": "adaptive",
+     "thresh_low": 0.050, "thresh_high": 0.200, "first_steps": 16, "last_steps": 4},
+    {"name": "wan_ec_adaptive_16_075_020", "mode": "adaptive",
+     "thresh_low": 0.075, "thresh_high": 0.200, "first_steps": 16, "last_steps": 4},
+    {"name": "wan_ec_adaptive_16_100_020", "mode": "adaptive",
+     "thresh_low": 0.100, "thresh_high": 0.200, "first_steps": 16, "last_steps": 4},
 ]
 
 

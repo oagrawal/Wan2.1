@@ -213,6 +213,9 @@ def easycache_forward_wan(self, x, t, context, seq_len,
             # Record pred_change
             self.pred_change_history.append(pred_change)
             self.accumulated_error_even += pred_change
+            # Record accumulator (before threshold check) for analysis plots
+            if getattr(self, "record_accumulator", False):
+                self.accumulated_history.append(self.accumulated_error_even)
 
             # Adaptive threshold selection
             current_thresh = self.thresh
@@ -428,7 +431,8 @@ def t2v_generate_wan(self, input_prompt, size=(1280, 720), frame_num=81,
 
 def configure_model(wan_t2v, mode, sample_steps, thresh=0.025,
                     thresh_low=0.025, thresh_high=0.05,
-                    first_steps=8, last_steps=6, ret_steps=10):
+                    first_steps=8, last_steps=6, ret_steps=10,
+                    record_accumulator=False):
     """
     Set up EasyCache on the Wan model.
 
@@ -464,6 +468,7 @@ def configure_model(wan_t2v, mode, sample_steps, thresh=0.025,
     model.pred_change_history = []        # eligible steps only
     model.pred_change_all_history = []    # all steps (for full-picture plot)
     model.pred_change_all_start = 0
+    model.accumulated_history = []        # accumulator trace (easycache mode, when record_accumulator=True)
     model.ret_steps = ret_steps * 2
     model.cutoff_steps = sample_steps * 2 - 2
 
@@ -479,6 +484,8 @@ def configure_model(wan_t2v, mode, sample_steps, thresh=0.025,
         model.thresh = thresh
         model.thresh_low = thresh
         model.thresh_high = thresh
+
+    model.record_accumulator = record_accumulator
 
     # Patch the generate method on the class
     wan_t2v.__class__.generate = t2v_generate_wan
@@ -542,6 +549,8 @@ def _parse_args():
     p.add_argument("--easycache-ret-steps", type=int, default=5,
                    help="First N condition steps always compute (no skipping). "
                         "Default 5 exposes more volatile eligible steps to adaptive thresholding.")
+    p.add_argument("--record-accumulator", action="store_true",
+                   help="Record accumulator trace (for easycache mode) and save accumulator plot.")
 
     # Wan model args
     p.add_argument("--task", type=str, default="t2v-1.3B",
@@ -616,6 +625,7 @@ def main():
         first_steps=args.easycache_first_steps,
         last_steps=args.easycache_last_steps,
         ret_steps=args.easycache_ret_steps,
+        record_accumulator=args.record_accumulator,
     )
 
     e2e_start = time()
@@ -700,6 +710,28 @@ def main():
         print(f"pred_change plot + values saved  "
               f"({len(pred_change_history)} eligible steps, "
               f"condition steps {eligible_start}–{eligible_end})")
+
+    # Accumulator plot (easycache mode with --record-accumulator)
+    accumulated_history = getattr(wan_t2v.model, "accumulated_history", None)
+    if accumulated_history and args.easycache_mode == "easycache":
+        thresh = args.easycache_thresh
+        xs = list(range(eligible_start, eligible_start + len(accumulated_history)))
+        plt.figure(figsize=(10, 5))
+        plt.plot(xs, accumulated_history, linewidth=2, marker="o", markersize=4, label="accumulator")
+        plt.axhline(y=thresh, color="red", linestyle="--", alpha=0.8, label=f"threshold {thresh}")
+        plt.xlabel("Condition step (eligible steps only)")
+        plt.ylabel("Accumulated pred_change")
+        plt.title(f"EasyCache accumulator vs threshold {thresh}\n"
+                  f"(skip when accumulator < thresh; reset to 0 when compute)")
+        plt.grid(True, alpha=0.3)
+        plt.legend(fontsize=9)
+        acc_plot_path = os.path.join(save_dir, "accumulator_plot.png")
+        plt.savefig(acc_plot_path, dpi=300, bbox_inches="tight")
+        plt.close()
+        with open(os.path.join(save_dir, "accumulator.txt"), "w") as f:
+            for v in accumulated_history:
+                f.write(f"{v}\n")
+        print(f"accumulator plot saved to {acc_plot_path}  ({len(accumulated_history)} steps)")
 
     # Diagnostic file
     k_arr = np.array(k_history) if k_history else np.array([])

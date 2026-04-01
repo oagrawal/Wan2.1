@@ -1,0 +1,24 @@
+Wan2.1 EasyCache Experiment
+============================================================
+Mode: easycache
+Task: t2v-1.3B  Size: 832*480
+Threshold: 0.09
+ret_steps: 5
+
+=== Timing ===
+End-to-end time:   79.42s
+DiT-only time:     61.06s
+Sample steps:      50  (model calls: 100)
+
+=== k_t Statistics ===
+k_t entries: 14
+Mean:  4.8086
+Std:   7.0223
+Min:   0.1838
+Max:   24.7913
+
+=== Prompt ===
+Two anthropomorphic cats in comfy boxing gear and bright gloves fight intensely on a spotlighted stage.
+
+=== Seed ===
+12345
