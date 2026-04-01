@@ -1,5 +1,0 @@
-mode,speedup,latency,vbench,psnr,ssim,lpips
-wan_dc_fixed_0.10,1.00x,298s,80.0670%,—,—,—
-wan_dc_fixed_0.20,1.55x,193s,80.3570%,—,—,—
-wan_dc_fixed_0.30,1.96x,152s,71.6529%,—,—,—
-wan_dc_fixed_0.40,2.28x,131s,68.9384%,—,—,—

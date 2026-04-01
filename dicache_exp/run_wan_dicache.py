@@ -16,11 +16,7 @@ from PIL import Image
 
 import wan
 from wan.configs import MAX_AREA_CONFIGS, SIZE_CONFIGS, SUPPORTED_SIZES, WAN_CONFIGS
-try:
-    from wan.utils.prompt_extend import DashScopePromptExpander, QwenPromptExpander
-except ImportError:
-    DashScopePromptExpander = None
-    QwenPromptExpander = None
+from wan.utils.prompt_extend import DashScopePromptExpander, QwenPromptExpander
 from wan.utils.utils import cache_image, cache_video, str2bool
 import torch.cuda.amp as amp
 from wan.modules.model import sinusoidal_embedding_1d
@@ -150,48 +146,46 @@ def dicache_forward(
         context_lens=context_lens)
     
     skip_forward = False
-    probe_ran = False   # tracks whether test_x was computed this step
+    probe_ran = False
     ori_x = x
-    slot = self.cnt % 2
-    # Enter probe logic only once both the previous input and internal state for
-    # this slot have been initialized by a prior full run.  On the very first
-    # call for each slot (slot-0 at cnt=0, slot-1 at cnt=1) previous_input is
-    # None, so we fall through to the full-run path below which initialises it.
-    if (self.cnt >= int(self.num_steps * self.ret_ratio)
-            and self.previous_input[slot] is not None
-            and self.previous_internal_states[slot] is not None):
+    if self.cnt >= int(self.num_steps * self.ret_ratio) and self.previous_input[self.cnt%2] is not None:
         probe_ran = True
         test_x, test_kwargs = x.clone(), kwargs
         anchor_blocks = self.blocks[0:self.probe_depth]
         for anchor_block in anchor_blocks:
             test_x = anchor_block(test_x, **test_kwargs)
-        delta_x = (x - self.previous_input[slot]).abs().mean() / self.previous_input[slot].abs().mean()
-        delta_y = (test_x - self.previous_internal_states[slot]).abs().mean() / self.previous_internal_states[slot].abs().mean()
+        delta_x = (x - self.previous_input[self.cnt%2]).abs().mean() / self.previous_input[self.cnt%2].abs().mean()
+        delta_y = (test_x - self.previous_internal_states[self.cnt%2]).abs().mean() / self.previous_internal_states[self.cnt%2].abs().mean()
         
-        self.accumulated_rel_l1_distance[slot] += delta_y # update error accumulator
+        self.accumulated_rel_l1_distance[self.cnt%2] += delta_y # update error accumulater
 
-        thresh = self.rel_l1_thresh[self.cnt] if isinstance(self.rel_l1_thresh, list) else self.rel_l1_thresh
-        if self.accumulated_rel_l1_distance[slot] < thresh: # skip this step
+        if self.calibrate:
+            self.calibration_deltas.append({"cnt": self.cnt, "slot": self.cnt%2, "delta_y": float(delta_y.item())})
+
+        if self.accumulated_rel_l1_distance[self.cnt%2] < self.rel_l1_thresh: # skip this step
             skip_forward = True
-            self.resume_flag[slot] = False
-            residual_x = self.residual_cache[slot]
+            self.resume_flag[self.cnt%2] = False 
+            residual_x = self.residual_cache[self.cnt%2]
         else:
-            self.resume_flag[slot] = True
-            self.accumulated_rel_l1_distance[slot] = 0
+            self.resume_flag[self.cnt%2] = True
+            self.accumulated_rel_l1_distance[self.cnt%2] = 0
+
+        if self.calibrate:
+            skip_forward = False  # always run full forward during calibration
 
 
     if skip_forward: # skip this step with cached residual
         ori_x = x.clone()
-        if len(self.residual_window[slot]) >= 2:
+        if len(self.residual_window[self.cnt%2]) >= 2:
             current_residual_indicator = test_x - x
-            gamma = ((current_residual_indicator - self.probe_residual_window[slot][-2]).abs().mean() / (self.probe_residual_window[slot][-1] - self.probe_residual_window[slot][-2]).abs().mean()).clip(1, 2)
-            x += self.residual_window[slot][-2] + gamma * (self.residual_window[slot][-1] - self.residual_window[slot][-2])
+            gamma = ((current_residual_indicator - self.probe_residual_window[self.cnt%2][-2]).abs().mean() / (self.probe_residual_window[self.cnt%2][-1] - self.probe_residual_window[self.cnt%2][-2]).abs().mean()).clip(1, 2)
+            x += self.residual_window[self.cnt%2][-2] + gamma * (self.residual_window[self.cnt%2][-1] - self.residual_window[self.cnt%2][-2])
         else:
-            x = x + residual_x
-        self.previous_internal_states[slot] = test_x
-        self.previous_input[slot] = ori_x
+            x =  x + residual_x 
+        self.previous_internal_states[self.cnt%2] = test_x
+        self.previous_input[self.cnt%2] = ori_x
     else:
-        if self.resume_flag[slot]: # resume from test_x
+        if self.resume_flag[self.cnt%2]: # resume from test_x
             x = test_x
             kwargs = test_kwargs
             unpass_blocks = self.blocks[self.probe_depth:]
@@ -201,24 +195,24 @@ def dicache_forward(
             x = block(x, **kwargs)
             if ind == self.probe_depth - 1:
                 if probe_ran:
-                    self.previous_internal_states[slot] = test_x # directly use test_x
+                    self.previous_internal_states[self.cnt%2] = test_x # directly use test_x
                 else:
-                    self.previous_internal_states[slot] = x # count for internal states
+                    self.previous_internal_states[self.cnt%2] = x # count for internal states
         residual_x = x - ori_x
+        
+        self.residual_cache[self.cnt%2] = residual_x # residual from block 0 to block N
+        self.probe_residual_cache[self.cnt%2] = self.previous_internal_states[self.cnt%2] - ori_x
+        self.previous_input[self.cnt%2] = ori_x
+        self.previous_output[self.cnt%2] = x
 
-        self.residual_cache[slot] = residual_x # residual from block 0 to block N
-        self.probe_residual_cache[slot] = self.previous_internal_states[slot] - ori_x
-        self.previous_input[slot] = ori_x
-        self.previous_output[slot] = x
-
-        if len(self.residual_window[slot]) <= 2:
-            self.residual_window[slot].append(residual_x)
-            self.probe_residual_window[slot].append(self.probe_residual_cache[slot])
+        if len(self.residual_window[self.cnt%2]) <= 2:
+            self.residual_window[self.cnt%2].append(residual_x)
+            self.probe_residual_window[self.cnt%2].append(self.probe_residual_cache[self.cnt%2])
         else:
-            self.residual_window[slot][-2] = self.residual_window[slot][-1]
-            self.residual_window[slot][-1] = residual_x
-            self.probe_residual_window[slot][-2] = self.probe_residual_window[slot][-1]
-            self.probe_residual_window[slot][-1] = self.probe_residual_cache[slot]
+            self.residual_window[self.cnt%2][-2] = self.residual_window[self.cnt%2][-1]
+            self.residual_window[self.cnt%2][-1] = residual_x
+            self.probe_residual_window[self.cnt%2][-2] = self.probe_residual_window[self.cnt%2][-1]
+            self.probe_residual_window[self.cnt%2][-1] = self.probe_residual_cache[self.cnt%2]
     
     x = self.head(x, e)
     x = self.unpatchify(x, grid_sizes)
@@ -427,8 +421,23 @@ def _parse_args():
     parser.add_argument(
         "--ret_ratio",
         type=float,
-        default=0.2,
-        help="Retention ratio of unchanged steps")
+        default=0.0,
+        help="Retention ratio of unchanged steps (0.0 = only natural per-slot warmup via None guard)")
+    parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        default=False,
+        help="Record probe delta_y per step; always runs full forward (no skipping).")
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
+        default=False,
+        help="Run full diffusion without any caching (uses original model forward).")
+    parser.add_argument(
+        "--calibrate_save_path",
+        type=str,
+        default=None,
+        help="Path prefix for calibration output JSON + PNG. Defaults to ./dicache_calibration.")
         
     args = parser.parse_args()
 
@@ -554,21 +563,24 @@ def generate(args):
         t5_cpu=args.t5_cpu,
     )
     
-    wan_t2v.model.__class__.forward = dicache_forward
-    wan_t2v.model.__class__.cnt = 0
-    wan_t2v.model.__class__.probe_depth = 1 
-    wan_t2v.model.__class__.num_steps = args.sample_steps * 2
-    wan_t2v.model.__class__.rel_l1_thresh = args.rel_l1_thresh
-    wan_t2v.model.__class__.accumulated_rel_l1_distance = [0.0, 0.0]
-    wan_t2v.model.__class__.ret_ratio = args.ret_ratio
-    wan_t2v.model.__class__.residual_cache = [None, None]
-    wan_t2v.model.__class__.probe_residual_cache = [None, None]
-    wan_t2v.model.__class__.residual_window = [[], []]
-    wan_t2v.model.__class__.probe_residual_window = [[], []]
-    wan_t2v.model.__class__.previous_internal_states = [None, None]
-    wan_t2v.model.__class__.previous_input = [None, None]
-    wan_t2v.model.__class__.previous_output = [None, None]
-    wan_t2v.model.__class__.resume_flag = [False, False]
+    if not args.baseline:
+        wan_t2v.model.__class__.forward = dicache_forward
+        wan_t2v.model.__class__.cnt = 0
+        wan_t2v.model.__class__.probe_depth = 1
+        wan_t2v.model.__class__.num_steps = args.sample_steps * 2
+        wan_t2v.model.__class__.rel_l1_thresh = args.rel_l1_thresh
+        wan_t2v.model.__class__.accumulated_rel_l1_distance = [0.0, 0.0]
+        wan_t2v.model.__class__.ret_ratio = args.ret_ratio
+        wan_t2v.model.__class__.residual_cache = [None, None]
+        wan_t2v.model.__class__.probe_residual_cache = [None, None]
+        wan_t2v.model.__class__.residual_window = [[], []]
+        wan_t2v.model.__class__.probe_residual_window = [[], []]
+        wan_t2v.model.__class__.previous_internal_states = [None, None]
+        wan_t2v.model.__class__.previous_input = [None, None]
+        wan_t2v.model.__class__.previous_output = [None, None]
+        wan_t2v.model.__class__.resume_flag = [False, False]
+        wan_t2v.model.__class__.calibrate = args.calibrate
+        wan_t2v.model.__class__.calibration_deltas = []
         
     logging.info(
         f"Generating {'image' if 't2i' in args.task else 'video'} ...")
@@ -583,6 +595,34 @@ def generate(args):
         guide_scale=args.sample_guide_scale,
         seed=args.base_seed,
         offload_model=args.offload_model)
+
+    if args.calibrate and rank == 0:
+        import json, os as _os
+        save_prefix = args.calibrate_save_path or "./dicache_calibration"
+        _os.makedirs(_os.path.dirname(_os.path.abspath(save_prefix)), exist_ok=True)
+        json_path = save_prefix + ".json"
+        with open(json_path, "w") as f:
+            json.dump(wan_t2v.model.calibration_deltas, f, indent=2)
+        logging.info(f"Saved calibration data to {json_path}")
+        try:
+            slot0 = [(d["cnt"], d["delta_y"]) for d in wan_t2v.model.calibration_deltas if d["slot"] == 0]
+            slot1 = [(d["cnt"], d["delta_y"]) for d in wan_t2v.model.calibration_deltas if d["slot"] == 1]
+            fig, ax = plt.subplots(figsize=(14, 4))
+            if slot0:
+                ax.plot([c for c, _ in slot0], [v for _, v in slot0], label="slot 0 (cond)", marker="o", markersize=3)
+            if slot1:
+                ax.plot([c for c, _ in slot1], [v for _, v in slot1], label="slot 1 (uncond)", marker="s", markersize=3)
+            ax.set_xlabel("cnt (forward call index, 0–99)")
+            ax.set_ylabel("delta_y (probe L1_rel)")
+            ax.set_title("DiCache probe curve — Wan2.1 T2V-1.3B")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            png_path = save_prefix + ".png"
+            fig.savefig(png_path, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            logging.info(f"Saved calibration plot to {png_path}")
+        except Exception as e:
+            logging.warning(f"Could not save calibration plot: {e}")
 
     if rank == 0:
         if args.save_file is None:
